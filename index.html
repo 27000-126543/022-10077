@@ -94,7 +94,10 @@
         <section id="admin-view" class="view">
             <div class="admin-header">
                 <h2>📖 书单管理</h2>
-                <button class="btn btn-primary" id="add-book-btn">+ 添加书籍</button>
+                <div class="admin-header-actions">
+                    <button class="btn btn-secondary" id="view-announcements-history-btn">📜 公告历史</button>
+                    <button class="btn btn-primary" id="add-book-btn">+ 添加书籍</button>
+                </div>
             </div>
 
             <div class="admin-book-list" id="admin-book-list">
@@ -107,20 +110,22 @@
 
     <!-- 添加/编辑书籍弹窗 -->
     <div class="modal" id="book-modal">
-        <div class="modal-content">
+        <div class="modal-content modal-wide">
             <div class="modal-header">
                 <h3 id="modal-title">添加书籍</h3>
                 <button class="modal-close" id="modal-close">&times;</button>
             </div>
             <form class="modal-body" id="book-form">
                 <input type="hidden" id="book-id">
-                <div class="form-group">
-                    <label for="book-title">作品名 *</label>
-                    <input type="text" id="book-title" required placeholder="请输入作品名称">
-                </div>
-                <div class="form-group">
-                    <label for="book-author">作者 *</label>
-                    <input type="text" id="book-author" required placeholder="请输入作者名">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="book-title">作品名 *</label>
+                        <input type="text" id="book-title" required placeholder="请输入作品名称">
+                    </div>
+                    <div class="form-group">
+                        <label for="book-author">作者 *</label>
+                        <input type="text" id="book-author" required placeholder="请输入作者名">
+                    </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
@@ -136,6 +141,50 @@
                         </select>
                     </div>
                 </div>
+
+                <div class="form-divider">
+                    <span>📅 追更排期</span>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="book-schedule-type">更新频率</label>
+                        <select id="book-schedule-type">
+                            <option value="none">无固定频率</option>
+                            <option value="daily">日更</option>
+                            <option value="workday">工作日更新</option>
+                            <option value="weekly">周更</option>
+                            <option value="custom">自定义</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="book-schedule-day">更新日（周几）</label>
+                        <select id="book-schedule-day">
+                            <option value="1">周一</option>
+                            <option value="2">周二</option>
+                            <option value="3">周三</option>
+                            <option value="4">周四</option>
+                            <option value="5">周五</option>
+                            <option value="6">周六</option>
+                            <option value="0">周日</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="book-schedule-time">预计更新时间</label>
+                        <input type="time" id="book-schedule-time" value="14:00">
+                    </div>
+                    <div class="form-group">
+                        <label for="book-next-update">下次预计更新日期</label>
+                        <input type="date" id="book-next-update">
+                    </div>
+                </div>
+
+                <div class="form-divider">
+                    <span>📖 最新章节</span>
+                </div>
+
                 <div class="form-group">
                     <label for="book-latest-chapter">最新章节</label>
                     <input type="text" id="book-latest-chapter" placeholder="如：第123章 章节标题">
@@ -154,16 +203,33 @@
                         <input type="number" id="book-spoiler-hours" min="0" max="168" value="24" placeholder="24">
                     </div>
                 </div>
-                <div class="form-group">
-                    <label for="book-discussion-rule">讨论规则</label>
-                    <textarea id="book-discussion-rule" rows="2" placeholder="如：更新后24小时内禁止剧透，讨论请加剧透预警"></textarea>
+
+                <div class="form-divider">
+                    <span>💬 讨论控制</span>
                 </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="book-discussion-status">讨论状态</label>
+                        <select id="book-discussion-status">
+                            <option value="spoiler-ban">🚫 禁剧透期</option>
+                            <option value="spoiler-limit">⚠️ 限剧透期</option>
+                            <option value="open">✅ 已开放讨论</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="book-discussion-rule">讨论规则</label>
+                        <input type="text" id="book-discussion-rule" placeholder="如：更新后24h内禁剧透">
+                    </div>
+                </div>
+
                 <div class="form-group form-checkbox">
                     <label>
                         <input type="checkbox" id="book-update-confirmed">
                         标记为已确认更新（触发群提醒）
                     </label>
                 </div>
+
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" id="modal-cancel">取消</button>
                     <button type="submit" class="btn btn-primary">保存</button>
@@ -185,7 +251,27 @@
                     <button class="btn btn-primary" id="copy-announcement-btn">
                         📋 复制到剪贴板
                     </button>
+                    <button class="btn btn-secondary" id="save-announcement-btn">
+                        💾 保存到历史
+                    </button>
                     <span class="copy-status" id="copy-status"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 公告历史弹窗 -->
+    <div class="modal" id="announcements-history-modal">
+        <div class="modal-content modal-wide">
+            <div class="modal-header">
+                <h3>📜 公告历史</h3>
+                <button class="modal-close" id="announcements-history-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="announcements-history-list" id="announcements-history-list">
+                    <div class="empty-state">
+                        <p>还没有保存的公告记录～</p>
+                    </div>
                 </div>
             </div>
         </div>
