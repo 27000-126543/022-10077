@@ -3,6 +3,8 @@ const STORAGE_KEY = 'novel_tracker_books';
 const VOTE_STORAGE_KEY = 'novel_tracker_votes';
 const SPOILER_REVEAL_KEY = 'novel_tracker_spoiler_reveals_v2';
 const ANNOUNCEMENTS_KEY = 'novel_tracker_announcements_v2';
+const MY_BOOKS_KEY = 'novel_tracker_my_books_v1';
+const ANNOUNCEMENT_COPIED_FLAG = 'novel_tracker_copied_chapters_v1';
 
 function getBooks() {
     const data = localStorage.getItem(STORAGE_KEY);
@@ -71,6 +73,131 @@ function deleteAnnouncementFromStorage(id) {
     let announcements = getAnnouncements();
     announcements = announcements.filter(a => a.id !== id);
     localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(announcements));
+}
+
+function getMyBooks() {
+    const data = localStorage.getItem(MY_BOOKS_KEY);
+    return data ? JSON.parse(data) : {};
+}
+
+function getMyBookStatus(bookId) {
+    const myBooks = getMyBooks();
+    return myBooks[bookId] || null;
+}
+
+function saveMyBookStatus(bookId, status) {
+    const myBooks = getMyBooks();
+    if (status) {
+        myBooks[bookId] = { status, updatedAt: new Date().toISOString() };
+    } else {
+        delete myBooks[bookId];
+    }
+    localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(myBooks));
+}
+
+function getMyStatusInfo(status) {
+    const statusMap = {
+        'reading': { label: '正在追', icon: '🔄', class: 'reading' },
+        'waiting': { label: '攒着看', icon: '⏳', class: 'waiting' },
+        'dropped': { label: '暂时弃坑', icon: '💤', class: 'dropped' }
+    };
+    return statusMap[status] || null;
+}
+
+function getCopiedChapters() {
+    const data = localStorage.getItem(ANNOUNCEMENT_COPIED_FLAG);
+    return data ? JSON.parse(data) : {};
+}
+
+function markChapterCopied(book, content) {
+    const copied = getCopiedChapters();
+    const chapterKey = getChapterKey(book);
+    copied[chapterKey] = {
+        bookId: book.id,
+        bookName: book.name,
+        chapter: book.latestChapter,
+        copiedAt: new Date().toISOString(),
+        content: content
+    };
+    localStorage.setItem(ANNOUNCEMENT_COPIED_FLAG, JSON.stringify(copied));
+
+    const announcements = getAnnouncements();
+    const existing = announcements.find(a =>
+        a.bookId === book.id && a.chapter === book.latestChapter
+    );
+    if (!existing) {
+        const autoAnnouncement = {
+            id: generateId(),
+            bookId: book.id,
+            bookName: book.name,
+            chapter: book.latestChapter,
+            summary: book.summary || '',
+            content: content,
+            discussionStatus: book.discussionStatus || 'spoiler-ban',
+            copiedCount: 1,
+            savedCount: 0,
+            lastCopiedAt: new Date().toISOString(),
+            lastSavedAt: null,
+            createdAt: new Date().toISOString(),
+            autoSaved: true
+        };
+        saveAnnouncement(autoAnnouncement);
+    } else {
+        updateAnnouncement(existing.id, {
+            copiedCount: (existing.copiedCount || 0) + 1,
+            lastCopiedAt: new Date().toISOString(),
+            content: content
+        });
+    }
+}
+
+function isChapterCopied(book) {
+    const copied = getCopiedChapters();
+    return !!copied[getChapterKey(book)];
+}
+
+function ensureChapterHistory(book) {
+    if (!book.chapterHistory) {
+        book.chapterHistory = [];
+    }
+    const hasCurrent = book.chapterHistory.some(h => h.chapter === book.latestChapter);
+    if (!hasCurrent && book.latestChapter && book.updateConfirmed) {
+        book.chapterHistory.unshift({
+            chapter: book.latestChapter,
+            summary: book.summary || '',
+            updateTime: book.confirmTime || new Date().toISOString(),
+            discussionStatus: book.discussionStatus || 'spoiler-ban',
+            hasAnnouncement: false
+        });
+    }
+    if (book.chapterHistory.length > 50) {
+        book.chapterHistory.length = 50;
+    }
+    return book;
+}
+
+function updateChapterHistoryAnnouncementStatus(book) {
+    if (!book.chapterHistory) return book;
+    const chapterKey = getChapterKey(book);
+    const copied = getCopiedChapters();
+    const announcements = getAnnouncements();
+
+    book.chapterHistory.forEach(h => {
+        const hKey = `${book.id}__${h.chapter}`;
+        h.hasAnnouncement = !!copied[hKey] || announcements.some(a =>
+            a.bookId === book.id && a.chapter === h.chapter
+        );
+        if (h.hasAnnouncement) {
+            const ann = announcements.find(a =>
+                a.bookId === book.id && a.chapter === h.chapter
+            );
+            if (ann) {
+                h.announcementCopied = (ann.copiedCount || 0) > 0;
+                h.announcementSaved = (ann.savedCount || 0) > 0;
+            }
+        }
+    });
+    return book;
 }
 
 function generateId() {
@@ -291,14 +418,25 @@ function getDiscussionStatusInfo(status, book) {
     return statusMap[status] || statusMap['spoiler-ban'];
 }
 
+let currentMemberFilter = 'all';
+
 // ========== 分类逻辑 ==========
-function categorizeBooks(books) {
+function categorizeBooks(books, filter = 'all') {
+    let filteredBooks = books;
+    if (filter !== 'all') {
+        const myBooks = getMyBooks();
+        filteredBooks = books.filter(book => {
+            const myStatus = myBooks[book.id];
+            return myStatus && myStatus.status === filter;
+        });
+    }
+
     const today = [];
     const week = [];
     const watch = [];
     const history = [];
 
-    books.forEach(book => {
+    filteredBooks.forEach(book => {
         if (book.status === 'hiatus') {
             watch.push(book);
             return;
@@ -356,7 +494,12 @@ function categorizeBooks(books) {
 // ========== 渲染层：看板 ==========
 function renderBoard() {
     const books = getBooks();
-    const { today, week, watch, history } = categorizeBooks(books);
+    const processedBooks = books.map(book => {
+        book = ensureChapterHistory(book);
+        book = updateChapterHistoryAnnouncementStatus(book);
+        return book;
+    });
+    const { today, week, watch, history } = categorizeBooks(processedBooks, currentMemberFilter);
 
     document.getElementById('stat-today-count').textContent = today.length;
     document.getElementById('stat-week-count').textContent = week.length;
@@ -367,6 +510,16 @@ function renderBoard() {
     document.getElementById('week-count').textContent = `${week.length} 本`;
     document.getElementById('watch-count').textContent = `${watch.length} 本`;
     document.getElementById('history-count').textContent = `${history.length} 条`;
+
+    const filterHint = document.getElementById('filter-hint');
+    if (currentMemberFilter === 'all') {
+        filterHint.textContent = '显示全部书单 · 点击书籍可修改我的追更状态';
+    } else {
+        const statusInfo = getMyStatusInfo(currentMemberFilter);
+        const myBooks = getMyBooks();
+        const count = Object.values(myBooks).filter(m => m.status === currentMemberFilter).length;
+        filterHint.textContent = `${statusInfo.icon} ${statusInfo.label} · 共 ${count} 本 · 点击书籍可修改状态`;
+    }
 
     renderBookList('today-list', today, 'today');
     renderBookList('week-list', week, 'week');
@@ -466,8 +619,20 @@ function createBookCardHTML(book, type) {
 
     const discussionTag = `<span class="book-tag discussion-${book.discussionStatus}">${discussionInfo.shortLabel}</span>`;
 
+    const myStatus = getMyBookStatus(book.id);
+    let myStatusBadge = '';
+    if (myStatus) {
+        const statusInfo = getMyStatusInfo(myStatus.status);
+        myStatusBadge = `<span class="my-status-badge ${statusInfo.class}">${statusInfo.icon} ${statusInfo.label}</span>`;
+    }
+
     const nextUpdateText = type === 'week' ? `<span class="next-update-time">⏰ ${updateText}</span>` : '';
     const lastUpdateText = type !== 'week' ? `<span class="update-time">🕒 ${updateText}</span>` : '';
+
+    const showHistoryBtn = (type === 'today' || type === 'history') && book.chapterHistory && book.chapterHistory.length > 1;
+    const historyBtn = showHistoryBtn
+        ? `<button class="view-chapter-history-btn" data-book-id="${book.id}" data-action="view-chapter-history">📜 查看历史章节（${book.chapterHistory.length}章）</button>`
+        : '';
 
     return `
         <div class="book-card" data-book-id="${book.id}">
@@ -475,6 +640,7 @@ function createBookCardHTML(book, type) {
                 <div class="book-title-wrap">
                     <span class="book-title">${escapeHtml(book.title)}</span>
                     <span class="book-author">· ${escapeHtml(book.author)}</span>
+                    ${myStatusBadge}
                 </div>
             </div>
             <div class="book-meta">
@@ -495,6 +661,7 @@ function createBookCardHTML(book, type) {
                     <span class="vote-stat-mini">📚 ${book.votes?.feeding || 0}</span>
                 </div>
             </div>
+            ${historyBtn}
         </div>
     `;
 }
@@ -509,23 +676,38 @@ function renderHistoryList(books) {
     }
 
     const announcements = getAnnouncements();
+    const copied = getCopiedChapters();
 
     container.innerHTML = books.map(book => {
+        const chapterKey = getChapterKey(book);
         const hasAnnouncement = announcements.some(a =>
             a.bookId === book.id && a.chapter === book.latestChapter
-        );
-        const announcementStatus = hasAnnouncement
-            ? '<span class="history-tag has-announcement">📢 已发公告</span>'
-            : '<span class="history-tag no-announcement">⚠️ 未发公告</span>';
+        ) || !!copied[chapterKey];
+
+        let announcementStatus;
+        if (hasAnnouncement) {
+            const ann = announcements.find(a =>
+                a.bookId === book.id && a.chapter === book.latestChapter
+            );
+            const copiedCount = ann ? (ann.copiedCount || 0) : (copied[chapterKey] ? 1 : 0);
+            if (copiedCount > 0) {
+                announcementStatus = `<span class="history-tag has-announcement">📋 已复制 ${copiedCount}次</span>`;
+            } else {
+                announcementStatus = '<span class="history-tag has-announcement">📢 已发公告</span>';
+            }
+        } else {
+            announcementStatus = '<span class="history-tag no-announcement">⚠️ 未发公告</span>';
+        }
 
         const daysSince = daysSinceUpdate(book.lastUpdateTime);
+        const historyCount = book.chapterHistory ? book.chapterHistory.length : 1;
 
         return `
-        <div class="history-item" data-book-id="${book.id}">
+        <div class="history-item" data-book-id="${book.id}" data-action="view-chapter-history">
             <div class="history-item-main">
                 <div class="history-item-title">📚 ${escapeHtml(book.title)}</div>
                 <div class="history-item-chapter">📖 ${escapeHtml(book.latestChapter || '无章节信息')}</div>
-                <div class="history-item-time">🕒 ${formatDateTime(book.lastUpdateTime)} · ${daysSince}天前</div>
+                <div class="history-item-time">🕒 ${formatDateTime(book.lastUpdateTime)} · ${daysSince}天前 · 共${historyCount}章历史</div>
             </div>
             <div class="history-item-tags">
                 ${announcementStatus}
@@ -538,7 +720,7 @@ function renderHistoryList(books) {
     container.querySelectorAll('.history-item').forEach(item => {
         item.addEventListener('click', () => {
             const bookId = item.dataset.bookId;
-            openDetailModal(bookId);
+            openChapterTimelineModal(bookId);
         });
     });
 }
@@ -794,20 +976,57 @@ function handleBookSubmit(e) {
         if (index !== -1) {
             const oldBook = books[index];
             const oldVotes = oldBook.votes || { read: 0, unread: 0, feeding: 0 };
+            const oldHistory = oldBook.chapterHistory || [];
 
             if (oldBook.latestChapter !== bookData.latestChapter && bookData.updateConfirmed) {
                 bookData.discussionStatus = 'spoiler-ban';
             }
 
-            books[index] = { ...oldBook, ...bookData, votes: oldVotes };
+            const newBook = { ...oldBook, ...bookData, votes: oldVotes };
+            newBook.chapterHistory = [...oldHistory];
+
+            if (bookData.updateConfirmed && bookData.latestChapter) {
+                const hasChapter = newBook.chapterHistory.some(h => h.chapter === bookData.latestChapter);
+                if (!hasChapter) {
+                    const confirmTime = bookData.updateConfirmed
+                        ? (bookData.lastUpdateTime || new Date().toISOString())
+                        : new Date().toISOString();
+                    newBook.chapterHistory.unshift({
+                        chapter: bookData.latestChapter,
+                        summary: bookData.chapterSummary || '',
+                        updateTime: confirmTime,
+                        discussionStatus: bookData.discussionStatus || 'spoiler-ban',
+                        hasAnnouncement: false
+                    });
+                    if (newBook.chapterHistory.length > 50) {
+                        newBook.chapterHistory.length = 50;
+                    }
+                }
+            }
+
+            books[index] = newBook;
         }
     } else {
-        books.push({
+        const newBook = {
             id: generateId(),
             ...bookData,
             votes: { read: 0, unread: 0, feeding: 0 },
+            chapterHistory: [],
             createdAt: new Date().toISOString()
-        });
+        };
+
+        if (bookData.updateConfirmed && bookData.latestChapter) {
+            const confirmTime = bookData.lastUpdateTime || new Date().toISOString();
+            newBook.chapterHistory.push({
+                chapter: bookData.latestChapter,
+                summary: bookData.chapterSummary || '',
+                updateTime: confirmTime,
+                discussionStatus: bookData.discussionStatus || 'spoiler-ban',
+                hasAnnouncement: false
+            });
+        }
+
+        books.push(newBook);
     }
 
     saveBooks(books);
@@ -952,16 +1171,8 @@ function markCurrentAnnouncementCopied() {
     const book = books.find(b => b.id === currentAnnouncementBookId);
     if (!book) return;
 
-    const announcements = getAnnouncements();
-    const existing = announcements.find(a =>
-        a.bookId === book.id && a.chapter === book.latestChapter
-    );
-    if (existing) {
-        updateAnnouncement(existing.id, {
-            copiedCount: (existing.copiedCount || 0) + 1,
-            lastCopiedAt: new Date().toISOString()
-        });
-    }
+    const announcement = document.getElementById('announcement-preview').textContent;
+    markChapterCopied(book, announcement);
 }
 
 function saveCurrentAnnouncement() {
@@ -1297,6 +1508,18 @@ function openDetailModal(bookId) {
                 <div class="vote-total">共 ${totalVotes} 人参与投票</div>
             </div>
         </div>
+
+        <div class="detail-actions" style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
+            <button class="btn btn-secondary" onclick="openMyStatusModal('${book.id}')">
+                📋 我的追更状态
+            </button>
+            <button class="btn btn-secondary" onclick="openChapterTimelineModal('${book.id}')">
+                📜 章节历史（${book.chapterHistory ? book.chapterHistory.length : 1}章）
+            </button>
+            <button class="btn btn-primary" onclick="openAnnouncementModal('${book.id}')" style="margin-left:auto;">
+                📢 生成群提醒
+            </button>
+        </div>
     `;
 
     document.getElementById('detail-title').textContent = '书籍详情';
@@ -1378,6 +1601,344 @@ function renderAll() {
     renderAdminList();
 }
 
+// ========== 我的追更状态 ==========
+function openMyStatusModal(bookId) {
+    const books = getBooks();
+    const book = books.find(b => b.id === bookId);
+    if (!book) return;
+
+    const currentStatus = getMyBookStatus(bookId);
+    const currentStatusValue = currentStatus ? currentStatus.status : null;
+
+    const statusOptions = [
+        { value: 'reading', icon: '🔄', label: '正在追', desc: '实时追更，更新必看' },
+        { value: 'waiting', icon: '⏳', label: '攒着看', desc: '先攒几章，养肥再杀' },
+        { value: 'dropped', icon: '💤', label: '暂时弃坑', desc: '等段时间再说' },
+        { value: null, icon: '❌', label: '清除状态', desc: '不标记任何状态' }
+    ];
+
+    const bodyHTML = `
+        <div style="margin-bottom:12px;">
+            <div style="font-size:16px;font-weight:600;color:#2c3e50;">${escapeHtml(book.title)}</div>
+            <div style="font-size:12px;color:#95a5a6;margin-top:2px;">作者：${escapeHtml(book.author)}</div>
+        </div>
+        <div class="my-status-options">
+            ${statusOptions.map(opt => {
+                const selected = currentStatusValue === opt.value ? 'selected' : '';
+                return `
+                    <div class="my-status-option ${selected}" data-status="${opt.value || ''}">
+                        <div class="my-status-option-icon">${opt.icon}</div>
+                        <div class="my-status-option-label">${opt.label}</div>
+                        <div class="my-status-option-desc">${opt.desc}</div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+
+    document.getElementById('my-status-body').innerHTML = bodyHTML;
+    document.getElementById('my-status-modal').classList.add('active');
+
+    document.querySelectorAll('.my-status-option').forEach(option => {
+        option.addEventListener('click', () => {
+            const status = option.dataset.status || null;
+            saveMyBookStatus(bookId, status);
+            closeMyStatusModal();
+            renderBoard();
+        });
+    });
+}
+
+function closeMyStatusModal() {
+    document.getElementById('my-status-modal').classList.remove('active');
+}
+
+// ========== 章节历史时间线 ==========
+function openChapterTimelineModal(bookId) {
+    const books = getBooks();
+    const book = books.find(b => b.id === bookId);
+    if (!book) return;
+
+    book = ensureChapterHistory(book);
+    book = updateChapterHistoryAnnouncementStatus(book);
+
+    const history = book.chapterHistory || [];
+
+    document.getElementById('timeline-title').textContent = `📜 ${escapeHtml(book.title)} · 章节更新历史`;
+
+    if (history.length === 0) {
+        document.getElementById('timeline-body').innerHTML = `
+            <div class="empty-state"><p>还没有章节更新记录～</p></div>
+        `;
+    } else {
+        const bodyHTML = `
+            <div class="timeline">
+                ${history.map((h, idx) => {
+                    const isCurrent = idx === 0;
+                    const discussionInfo = getDiscussionStatusInfo(h.discussionStatus || 'spoiler-ban');
+                    const daysSince = h.updateTime ? daysSinceUpdate(h.updateTime) : 0;
+
+                    let annBadge = '';
+                    if (h.hasAnnouncement) {
+                        if (h.announcementCopied) {
+                            annBadge = '<span class="book-tag platform">📋 已复制</span>';
+                        } else if (h.announcementSaved) {
+                            annBadge = '<span class="book-tag schedule">💾 已保存</span>';
+                        } else {
+                            annBadge = '<span class="book-tag schedule">📢 已发公告</span>';
+                        }
+                    } else {
+                        annBadge = '<span class="book-tag discussion-spoiler-ban">⚠️ 未发公告</span>';
+                    }
+
+                    return `
+                        <div class="timeline-item ${isCurrent ? 'current' : ''}">
+                            <div class="timeline-item-header">
+                                <div class="timeline-chapter">
+                                    ${escapeHtml(h.chapter)}
+                                    ${isCurrent ? '<span class="timeline-current-badge">当前章节</span>' : ''}
+                                </div>
+                                <div class="timeline-time">${formatDateTime(h.updateTime)} · ${daysSince}天前</div>
+                            </div>
+                            <div class="timeline-item-meta">
+                                <span class="book-tag discussion-${h.discussionStatus || 'spoiler-ban'}">${discussionInfo.shortLabel}</span>
+                                ${annBadge}
+                            </div>
+                            ${h.summary ? `<div class="timeline-summary">${escapeHtml(h.summary)}</div>` : ''}
+                            <div class="timeline-item-actions">
+                                <button class="btn btn-secondary btn-sm" onclick="generateAndCopyChapterAnnouncement('${book.id}', ${idx})">
+                                    📋 补发公告
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+        document.getElementById('timeline-body').innerHTML = bodyHTML;
+    }
+
+    document.getElementById('chapter-timeline-modal').classList.add('active');
+}
+
+function closeChapterTimelineModal() {
+    document.getElementById('chapter-timeline-modal').classList.remove('active');
+}
+
+function generateAndCopyChapterAnnouncement(bookId, historyIndex) {
+    const books = getBooks();
+    const book = books.find(b => b.id === bookId);
+    if (!book || !book.chapterHistory) return;
+
+    const history = book.chapterHistory[historyIndex];
+    if (!history) return;
+
+    const tempBook = {
+        ...book,
+        latestChapter: history.chapter,
+        chapterSummary: history.summary,
+        lastUpdateTime: history.updateTime,
+        discussionStatus: history.discussionStatus || 'spoiler-ban'
+    };
+
+    const content = generateAnnouncement(tempBook);
+    markChapterCopied(tempBook, content);
+
+    navigator.clipboard.writeText(content).then(() => {
+        alert('✅ 公告已生成并复制到剪贴板！已记录到公告历史。');
+        openChapterTimelineModal(bookId);
+        renderBoard();
+    }).catch(() => {
+        alert('❌ 复制失败，但公告已保存到历史');
+        openChapterTimelineModal(bookId);
+        renderBoard();
+    });
+}
+
+// ========== 运营概览 ==========
+function renderOverviewPage() {
+    const books = getBooks();
+    const announcements = getAnnouncements();
+    const copied = getCopiedChapters();
+    const myBooks = getMyBooks();
+
+    const now = Date.now();
+    const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const threeDaysAgo = now - 3 * 24 * 60 * 60 * 1000;
+
+    let totalUpdates7d = 0;
+    let totalVotes = 0;
+    const alerts = [];
+    const processedBooks = [];
+
+    books.forEach(book => {
+        book = ensureChapterHistory(book);
+        book = updateChapterHistoryAnnouncementStatus(book);
+
+        const updates7d = (book.chapterHistory || []).filter(h =>
+            h.updateTime && new Date(h.updateTime).getTime() >= sevenDaysAgo
+        ).length;
+        totalUpdates7d += updates7d;
+
+        const bookVotes = (book.votes?.read || 0) + (book.votes?.unread || 0) + (book.votes?.feeding || 0);
+        totalVotes += bookVotes;
+
+        const totalV = bookVotes;
+        const readPct = totalV > 0 ? Math.round((book.votes?.read || 0) / totalV * 100) : 0;
+        const lastUpdate = book.lastUpdateTime ? new Date(book.lastUpdateTime).getTime() : 0;
+        const daysSince = lastUpdate > 0 ? Math.floor((now - lastUpdate) / (24 * 60 * 60 * 1000)) : 999;
+
+        const hasCurrentAnn = announcements.some(a =>
+            a.bookId === book.id && a.chapter === book.latestChapter
+        ) || !!copied[getChapterKey(book)];
+
+        let bookAlert = null;
+        if (book.status === 'ongoing' && daysSince >= 7 && book.updateConfirmed) {
+            bookAlert = { type: 'warning', text: `《${book.title}》已 ${daysSince} 天未更新，可能需要催更` };
+        }
+        if (book.updateConfirmed && book.latestChapter && !hasCurrentAnn) {
+            bookAlert = { type: 'danger', text: `《${book.title}》已更新但未发公告，请补发` };
+        }
+        if (book.discussionStatus === 'spoiler-ban' && readPct >= 60 && totalV >= 10) {
+            bookAlert = { type: 'info', text: `《${book.title}》已读完${readPct}%，可以考虑开放讨论` };
+        }
+        if (bookAlert) alerts.push(bookAlert);
+
+        processedBooks.push({
+            ...book,
+            updates7d,
+            readPct,
+            totalVotes: bookVotes,
+            daysSince,
+            hasCurrentAnn,
+            bookAlert
+        });
+    });
+
+    document.getElementById('overview-total-books').textContent = books.length;
+    document.getElementById('overview-updates-7d').textContent = totalUpdates7d;
+    document.getElementById('overview-announcements').textContent = announcements.length;
+    document.getElementById('overview-total-votes').textContent = totalVotes;
+
+    const alertsContainer = document.getElementById('overview-alerts');
+    if (alerts.length === 0) {
+        alertsContainer.innerHTML = `
+            <div class="overview-alert success">
+                <span>✅</span>
+                <span>运营状态良好，所有书籍更新和公告都已同步～</span>
+            </div>
+        `;
+    } else {
+        alertsContainer.innerHTML = alerts.map(alert => `
+            <div class="overview-alert ${alert.type}">
+                <span>${alert.type === 'danger' ? '⚠️' : alert.type === 'warning' ? '⏰' : '💡'}</span>
+                <span>${escapeHtml(alert.text)}</span>
+            </div>
+        `).join('');
+    }
+
+    const statusLabel = {
+        'ongoing': '连载中',
+        'completed': '已完结',
+        'hiatus': '断更中'
+    };
+
+    processedBooks.sort((a, b) => b.updates7d - a.updates7d);
+
+    const listContainer = document.getElementById('overview-list');
+    listContainer.innerHTML = processedBooks.map(book => {
+        const discInfo = getDiscussionStatusInfo(book.discussionStatus);
+        const statusText = statusLabel[book.status] || '未知';
+        const myStatus = getMyBookStatus(book.id);
+
+        let myStatusBadge = '';
+        if (myStatus) {
+            const si = getMyStatusInfo(myStatus.status);
+            myStatusBadge = `<span class="my-status-badge ${si.class}">${si.icon} ${si.label}</span>`;
+        }
+
+        let annBadge = '';
+        if (book.hasCurrentAnn) {
+            const ann = announcements.find(a =>
+                a.bookId === book.id && a.chapter === book.latestChapter
+            );
+            const copiedCount = ann ? (ann.copiedCount || 0) : (copied[getChapterKey(book)] ? 1 : 0);
+            if (copiedCount > 0) {
+                annBadge = `<span class="book-tag platform">📋 已复制${copiedCount}次</span>`;
+            } else {
+                annBadge = `<span class="book-tag schedule">💾 已保存</span>`;
+            }
+        } else {
+            annBadge = `<span class="book-tag discussion-spoiler-ban">⚠️ 未发公告</span>`;
+        }
+
+        const updateCount = book.chapterHistory ? book.chapterHistory.length : 0;
+
+        return `
+            <div class="overview-item" data-book-id="${book.id}">
+                <div class="overview-item-header">
+                    <div>
+                        <span class="overview-item-title">${escapeHtml(book.title)}</span>
+                        ${myStatusBadge}
+                    </div>
+                    <div class="overview-item-badges">
+                        <span class="book-tag status-${book.status}">${statusText}</span>
+                        <span class="book-tag discussion-${book.discussionStatus}">${discInfo.shortLabel}</span>
+                        ${annBadge}
+                    </div>
+                </div>
+                ${book.bookAlert ? `
+                    <div style="padding:8px 12px;background:${book.bookAlert.type === 'danger' ? '#fdecea' : book.bookAlert.type === 'warning' ? '#fef9e7' : '#ebf5fb'};border-radius:6px;font-size:13px;color:${book.bookAlert.type === 'danger' ? '#c0392b' : book.bookAlert.type === 'warning' ? '#d68910' : '#2874a6'};margin-bottom:12px;">
+                        ${book.bookAlert.type === 'danger' ? '⚠️' : book.bookAlert.type === 'warning' ? '⏰' : '💡'} ${escapeHtml(book.bookAlert.text)}
+                    </div>
+                ` : ''}
+                <div class="overview-item-stats">
+                    <div class="overview-item-stat">
+                        <div class="overview-item-stat-value ${book.updates7d > 0 ? 'up' : ''}">${book.updates7d}</div>
+                        <div class="overview-item-stat-label">近7天更新</div>
+                    </div>
+                    <div class="overview-item-stat">
+                        <div class="overview-item-stat-value">${updateCount}</div>
+                        <div class="overview-item-stat-label">总章节数</div>
+                    </div>
+                    <div class="overview-item-stat">
+                        <div class="overview-item-stat-value">${book.readPct}%</div>
+                        <div class="overview-item-stat-label">已读完</div>
+                    </div>
+                    <div class="overview-item-stat">
+                        <div class="overview-item-stat-value">${book.totalVotes}</div>
+                        <div class="overview-item-stat-label">投票人数</div>
+                    </div>
+                </div>
+                <div class="overview-item-actions">
+                    <button class="btn btn-secondary btn-sm" onclick="openDetailModal('${book.id}')">📖 查看详情</button>
+                    <button class="btn btn-secondary btn-sm" onclick="openChapterTimelineModal('${book.id}')">📜 章节历史</button>
+                    <button class="btn btn-secondary btn-sm" onclick="openDiscussionModal('${book.id}')">🗳️ 讨论管理</button>
+                    <button class="btn btn-primary btn-sm" onclick="openAnnouncementModal('${book.id}')">📢 生成公告</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function switchAdminView(viewName) {
+    document.querySelectorAll('.admin-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.adminView === viewName);
+    });
+
+    document.querySelectorAll('.admin-subview').forEach(view => {
+        view.classList.remove('active');
+    });
+
+    document.getElementById(`admin-${viewName}-view`).classList.add('active');
+
+    if (viewName === 'books') {
+        renderAdminList();
+    } else if (viewName === 'overview') {
+        renderOverviewPage();
+    }
+}
+
 // ========== 数据迁移 ==========
 function migrateData() {
     const books = getBooks();
@@ -1406,6 +1967,23 @@ function migrateData() {
         }
         if (book.updateConfirmed === undefined) {
             book.updateConfirmed = !!book.lastUpdateTime;
+            migrated = true;
+        }
+        if (book.chapterHistory === undefined) {
+            book.chapterHistory = [];
+            if (book.latestChapter && book.updateConfirmed) {
+                book.chapterHistory.push({
+                    chapter: book.latestChapter,
+                    summary: book.chapterSummary || '',
+                    updateTime: book.confirmTime || book.lastUpdateTime || new Date().toISOString(),
+                    discussionStatus: book.discussionStatus || 'spoiler-ban',
+                    hasAnnouncement: false
+                });
+            }
+            migrated = true;
+        }
+        if (book.confirmTime === undefined && book.updateConfirmed && book.lastUpdateTime) {
+            book.confirmTime = book.lastUpdateTime;
             migrated = true;
         }
     });
@@ -1656,6 +2234,39 @@ function initSampleData() {
 
     saveBooks(sampleBooks);
 
+    const books = getBooks();
+    books.forEach((book, idx) => {
+        if (!book.chapterHistory) book.chapterHistory = [];
+        if (book.updateConfirmed && book.latestChapter) {
+            book.chapterHistory.unshift({
+                chapter: book.latestChapter,
+                summary: book.chapterSummary || '',
+                updateTime: book.lastUpdateTime,
+                discussionStatus: book.discussionStatus,
+                hasAnnouncement: idx < 2
+            });
+            const prevDate = new Date(book.lastUpdateTime);
+            prevDate.setDate(prevDate.getDate() - 3);
+            book.chapterHistory.push({
+                chapter: `第${Math.floor(Math.random() * 100) + 100}章 上一章`,
+                summary: '上一章的精彩内容...',
+                updateTime: prevDate.toISOString(),
+                discussionStatus: 'open',
+                hasAnnouncement: true
+            });
+            const prevDate2 = new Date(prevDate);
+            prevDate2.setDate(prevDate2.getDate() - 3);
+            book.chapterHistory.push({
+                chapter: `第${Math.floor(Math.random() * 100) + 90}章 再上一章`,
+                summary: '再上一章的内容...',
+                updateTime: prevDate2.toISOString(),
+                discussionStatus: 'open',
+                hasAnnouncement: true
+            });
+        }
+    });
+    saveBooks(books);
+
     const sampleAnnouncements = [
         {
             id: generateId(),
@@ -1686,6 +2297,16 @@ function initSampleData() {
     ];
 
     localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(sampleAnnouncements));
+
+    const sampleMyBooks = {};
+    if (books.length >= 5) {
+        sampleMyBooks[books[0].id] = { status: 'reading', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[2].id] = { status: 'reading', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[4].id] = { status: 'waiting', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[6].id] = { status: 'waiting', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[8].id] = { status: 'dropped', updatedAt: new Date().toISOString() };
+    }
+    localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(sampleMyBooks));
 }
 
 // ========== 初始化 ==========
@@ -1696,6 +2317,21 @@ function init() {
     document.querySelectorAll('.nav-tab').forEach(tab => {
         tab.addEventListener('click', () => {
             switchView(tab.dataset.view);
+        });
+    });
+
+    document.querySelectorAll('.admin-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            switchAdminView(tab.dataset.adminView);
+        });
+    });
+
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentMemberFilter = btn.dataset.filter;
+            renderBoard();
         });
     });
 
@@ -1710,8 +2346,13 @@ function init() {
 
     document.getElementById('detail-close').addEventListener('click', closeDetailModal);
 
+    document.getElementById('my-status-close').addEventListener('click', closeMyStatusModal);
+    document.getElementById('timeline-close').addEventListener('click', closeChapterTimelineModal);
+
     document.getElementById('view-announcements-history-btn').addEventListener('click', openAnnouncementsHistoryModal);
     document.getElementById('announcements-history-close').addEventListener('click', closeAnnouncementsHistoryModal);
+
+    document.getElementById('refresh-overview-btn').addEventListener('click', renderOverviewPage);
 
     document.getElementById('history-filter-book').addEventListener('change', renderAnnouncementsHistory);
     document.getElementById('history-filter-time').addEventListener('change', renderAnnouncementsHistory);
@@ -1723,6 +2364,15 @@ function init() {
                 modal.classList.remove('active');
             }
         });
+    });
+
+    document.addEventListener('click', (e) => {
+        const viewHistoryBtn = e.target.closest('[data-action="view-chapter-history"]');
+        if (viewHistoryBtn) {
+            const bookId = viewHistoryBtn.dataset.bookId;
+            e.stopPropagation();
+            openChapterTimelineModal(bookId);
+        }
     });
 
     renderAll();

@@ -21,6 +21,17 @@
     <main class="app-main">
         <!-- 看板视图 -->
         <section id="board-view" class="view active">
+            <div class="my-book-filter-bar">
+                <span class="filter-label">📋 我的书单：</span>
+                <div class="filter-buttons">
+                    <button class="filter-btn active" data-filter="all">全部</button>
+                    <button class="filter-btn" data-filter="reading">🔄 正在追</button>
+                    <button class="filter-btn" data-filter="waiting">⏳ 攒着看</button>
+                    <button class="filter-btn" data-filter="dropped">💤 暂时弃坑</button>
+                </div>
+                <div class="filter-hint" id="filter-hint">显示全部书单 · 点击书籍可修改我的追更状态</div>
+            </div>
+
             <div class="board-stats">
                 <div class="stat-card stat-today">
                     <span class="stat-label">今日更新</span>
@@ -113,18 +124,67 @@
 
         <!-- 管理后台视图 -->
         <section id="admin-view" class="view">
-            <div class="admin-header">
-                <h2>📖 书单管理</h2>
-                <div class="admin-header-actions">
-                    <button class="btn btn-secondary" id="view-announcements-history-btn">📜 公告历史</button>
-                    <button class="btn btn-primary" id="add-book-btn">+ 添加书籍</button>
+            <div class="admin-tabs">
+                <button class="admin-tab active" data-admin-view="books">📖 书单管理</button>
+                <button class="admin-tab" data-admin-view="overview">📊 运营概览</button>
+            </div>
+
+            <!-- 书单管理 -->
+            <div id="admin-books-view" class="admin-subview active">
+                <div class="admin-header">
+                    <h2>📖 书单管理</h2>
+                    <div class="admin-header-actions">
+                        <button class="btn btn-secondary" id="view-announcements-history-btn">📜 公告历史</button>
+                        <button class="btn btn-primary" id="add-book-btn">+ 添加书籍</button>
+                    </div>
+                </div>
+                <div class="admin-book-list" id="admin-book-list">
+                    <div class="empty-state">
+                        <p>还没有添加任何书籍，点击上方按钮添加第一本吧～</p>
+                    </div>
                 </div>
             </div>
 
-            <div class="admin-book-list" id="admin-book-list">
-                <div class="empty-state">
-                    <p>还没有添加任何书籍，点击上方按钮添加第一本吧～</p>
+            <!-- 运营概览 -->
+            <div id="admin-overview-view" class="admin-subview">
+                <div class="admin-header">
+                    <h2>📊 作品运营概览</h2>
+                    <div class="admin-header-actions">
+                        <button class="btn btn-secondary" id="refresh-overview-btn">🔄 刷新数据</button>
+                    </div>
                 </div>
+                <div class="overview-stats">
+                    <div class="overview-stat-card">
+                        <div class="overview-stat-icon">📚</div>
+                        <div class="overview-stat-info">
+                            <div class="overview-stat-value" id="overview-total-books">0</div>
+                            <div class="overview-stat-label">总作品数</div>
+                        </div>
+                    </div>
+                    <div class="overview-stat-card">
+                        <div class="overview-stat-icon">🔥</div>
+                        <div class="overview-stat-info">
+                            <div class="overview-stat-value" id="overview-updates-7d">0</div>
+                            <div class="overview-stat-label">近7天更新次数</div>
+                        </div>
+                    </div>
+                    <div class="overview-stat-card">
+                        <div class="overview-stat-icon">📢</div>
+                        <div class="overview-stat-info">
+                            <div class="overview-stat-value" id="overview-announcements">0</div>
+                            <div class="overview-stat-label">公告总数</div>
+                        </div>
+                    </div>
+                    <div class="overview-stat-card">
+                        <div class="overview-stat-icon">🗳️</div>
+                        <div class="overview-stat-info">
+                            <div class="overview-stat-value" id="overview-total-votes">0</div>
+                            <div class="overview-stat-label">总投票人次</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="overview-alerts" id="overview-alerts"></div>
+                <div class="overview-list" id="overview-list"></div>
             </div>
         </section>
     </main>
@@ -321,6 +381,30 @@
                         <p>还没有保存的公告记录～</p>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 追更状态弹窗 -->
+    <div class="modal" id="my-status-modal">
+        <div class="modal-content" style="max-width:440px;">
+            <div class="modal-header">
+                <h3>📋 设置我的追更状态</h3>
+                <button class="modal-close" id="my-status-close">&times;</button>
+            </div>
+            <div class="modal-body" id="my-status-body">
+            </div>
+        </div>
+    </div>
+
+    <!-- 章节历史时间线弹窗 -->
+    <div class="modal" id="chapter-timeline-modal">
+        <div class="modal-content modal-wide">
+            <div class="modal-header">
+                <h3 id="timeline-title">📜 章节更新历史</h3>
+                <button class="modal-close" id="timeline-close">&times;</button>
+            </div>
+            <div class="modal-body" id="timeline-body">
             </div>
         </div>
     </div>
