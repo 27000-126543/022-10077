@@ -88,10 +88,29 @@ function getMyBookStatus(bookId) {
 function saveMyBookStatus(bookId, status) {
     const myBooks = getMyBooks();
     if (status) {
-        myBooks[bookId] = { status, updatedAt: new Date().toISOString() };
+        const existing = myBooks[bookId] || {};
+        myBooks[bookId] = { ...existing, status, updatedAt: new Date().toISOString() };
     } else {
         delete myBooks[bookId];
     }
+    localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(myBooks));
+}
+
+function saveMyBookNote(bookId, note) {
+    const myBooks = getMyBooks();
+    if (!myBooks[bookId]) {
+        myBooks[bookId] = { status: null, updatedAt: new Date().toISOString() };
+    }
+    myBooks[bookId].note = note || '';
+    localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(myBooks));
+}
+
+function saveMyBookReminder(bookId, reminderTime) {
+    const myBooks = getMyBooks();
+    if (!myBooks[bookId]) {
+        myBooks[bookId] = { status: null, updatedAt: new Date().toISOString() };
+    }
+    myBooks[bookId].reminderTime = reminderTime || '';
     localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(myBooks));
 }
 
@@ -114,8 +133,9 @@ function markChapterCopied(book, content) {
     const chapterKey = getChapterKey(book);
     copied[chapterKey] = {
         bookId: book.id,
-        bookName: book.name,
+        bookName: book.title || book.name || '',
         chapter: book.latestChapter,
+        discussionStatus: book.discussionStatus || 'spoiler-ban',
         copiedAt: new Date().toISOString(),
         content: content
     };
@@ -129,9 +149,9 @@ function markChapterCopied(book, content) {
         const autoAnnouncement = {
             id: generateId(),
             bookId: book.id,
-            bookName: book.name,
+            bookTitle: book.title || book.name || '',
             chapter: book.latestChapter,
-            summary: book.summary || '',
+            summary: book.chapterSummary || book.summary || '',
             content: content,
             discussionStatus: book.discussionStatus || 'spoiler-ban',
             copiedCount: 1,
@@ -146,6 +166,8 @@ function markChapterCopied(book, content) {
         updateAnnouncement(existing.id, {
             copiedCount: (existing.copiedCount || 0) + 1,
             lastCopiedAt: new Date().toISOString(),
+            bookTitle: book.title || existing.bookTitle,
+            discussionStatus: book.discussionStatus || existing.discussionStatus,
             content: content
         });
     }
@@ -164,10 +186,17 @@ function ensureChapterHistory(book) {
     if (!hasCurrent && book.latestChapter && book.updateConfirmed) {
         book.chapterHistory.unshift({
             chapter: book.latestChapter,
-            summary: book.summary || '',
+            summary: book.chapterSummary || book.summary || '',
             updateTime: book.confirmTime || new Date().toISOString(),
             discussionStatus: book.discussionStatus || 'spoiler-ban',
-            hasAnnouncement: false
+            hasAnnouncement: false,
+            votesSnapshot: {
+                read: book.votes?.read || 0,
+                unread: book.votes?.unread || 0,
+                feeding: book.votes?.feeding || 0,
+                capturedAt: new Date().toISOString()
+            },
+            discussionOpenedAt: null
         });
     }
     if (book.chapterHistory.length > 50) {
@@ -621,9 +650,27 @@ function createBookCardHTML(book, type) {
 
     const myStatus = getMyBookStatus(book.id);
     let myStatusBadge = '';
+    let myNoteHTML = '';
+    let myReminderHTML = '';
     if (myStatus) {
-        const statusInfo = getMyStatusInfo(myStatus.status);
-        myStatusBadge = `<span class="my-status-badge ${statusInfo.class}">${statusInfo.icon} ${statusInfo.label}</span>`;
+        if (myStatus.status) {
+            const statusInfo = getMyStatusInfo(myStatus.status);
+            myStatusBadge = `<span class="my-status-badge ${statusInfo.class}">${statusInfo.icon} ${statusInfo.label}</span>`;
+        }
+        if (myStatus.note) {
+            myNoteHTML = `<div class="book-my-note">📝 ${escapeHtml(myStatus.note)}</div>`;
+        }
+        if (myStatus.reminderTime) {
+            const now = new Date();
+            const currentMinutes = now.getHours() * 60 + now.getMinutes();
+            const [rh, rm] = myStatus.reminderTime.split(':').map(Number);
+            const reminderMinutes = rh * 60 + rm;
+            const diff = Math.abs(currentMinutes - reminderMinutes);
+            const isNear = diff <= 30;
+            myReminderHTML = isNear
+                ? `<div class="book-my-reminder active">⏰ ${myStatus.reminderTime} 提醒中</div>`
+                : `<div class="book-my-reminder">⏰ ${myStatus.reminderTime}</div>`;
+        }
     }
 
     const nextUpdateText = type === 'week' ? `<span class="next-update-time">⏰ ${updateText}</span>` : '';
@@ -661,6 +708,8 @@ function createBookCardHTML(book, type) {
                     <span class="vote-stat-mini">📚 ${book.votes?.feeding || 0}</span>
                 </div>
             </div>
+            ${myNoteHTML}
+            ${myReminderHTML}
             ${historyBtn}
         </div>
     `;
@@ -866,7 +915,19 @@ function setDiscussionStatus(bookId, status) {
     const book = books.find(b => b.id === bookId);
     if (!book) return;
 
+    const oldStatus = book.discussionStatus;
     book.discussionStatus = status;
+
+    if (oldStatus !== 'open' && status === 'open') {
+        book = ensureChapterHistory(book);
+        if (book.chapterHistory && book.chapterHistory.length > 0) {
+            const currentChapter = book.chapterHistory.find(h => h.chapter === book.latestChapter);
+            if (currentChapter && !currentChapter.discussionOpenedAt) {
+                currentChapter.discussionOpenedAt = new Date().toISOString();
+            }
+        }
+    }
+
     saveBooks(books);
 
     openDiscussionModal(bookId);
@@ -996,11 +1057,25 @@ function handleBookSubmit(e) {
                         summary: bookData.chapterSummary || '',
                         updateTime: confirmTime,
                         discussionStatus: bookData.discussionStatus || 'spoiler-ban',
-                        hasAnnouncement: false
+                        hasAnnouncement: false,
+                        votesSnapshot: {
+                            read: oldVotes.read || 0,
+                            unread: oldVotes.unread || 0,
+                            feeding: oldVotes.feeding || 0,
+                            capturedAt: new Date().toISOString()
+                        },
+                        discussionOpenedAt: null
                     });
                     if (newBook.chapterHistory.length > 50) {
                         newBook.chapterHistory.length = 50;
                     }
+                }
+            }
+
+            if (oldBook.discussionStatus !== 'open' && bookData.discussionStatus === 'open' && newBook.chapterHistory.length > 0) {
+                const currentChapter = newBook.chapterHistory.find(h => h.chapter === bookData.latestChapter);
+                if (currentChapter && !currentChapter.discussionOpenedAt) {
+                    currentChapter.discussionOpenedAt = new Date().toISOString();
                 }
             }
 
@@ -1022,7 +1097,9 @@ function handleBookSubmit(e) {
                 summary: bookData.chapterSummary || '',
                 updateTime: confirmTime,
                 discussionStatus: bookData.discussionStatus || 'spoiler-ban',
-                hasAnnouncement: false
+                hasAnnouncement: false,
+                votesSnapshot: { read: 0, unread: 0, feeding: 0, capturedAt: new Date().toISOString() },
+                discussionOpenedAt: null
             });
         }
 
@@ -1609,6 +1686,8 @@ function openMyStatusModal(bookId) {
 
     const currentStatus = getMyBookStatus(bookId);
     const currentStatusValue = currentStatus ? currentStatus.status : null;
+    const currentNote = currentStatus ? (currentStatus.note || '') : '';
+    const currentReminder = currentStatus ? (currentStatus.reminderTime || '') : '';
 
     const statusOptions = [
         { value: 'reading', icon: '🔄', label: '正在追', desc: '实时追更，更新必看' },
@@ -1634,6 +1713,21 @@ function openMyStatusModal(bookId) {
                 `;
             }).join('')}
         </div>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px dashed #e8ecf0;">
+            <div class="form-group" style="margin-bottom:12px;">
+                <label style="font-size:13px;font-weight:500;color:#2c3e50;display:block;margin-bottom:4px;">📝 私人备注</label>
+                <input type="text" id="my-book-note" class="form-control" placeholder="比如：看到第120章了、这本弃了但以后可能回来..." value="${escapeHtml(currentNote)}" style="font-size:13px;">
+                <div style="font-size:11px;color:#95a5a6;margin-top:2px;">仅自己可见，不影响公共书单</div>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+                <label style="font-size:13px;font-weight:500;color:#2c3e50;display:block;margin-bottom:4px;">⏰ 追更提醒时间</label>
+                <input type="time" id="my-book-reminder" class="form-control" value="${currentReminder}" style="font-size:13px;">
+                <div style="font-size:11px;color:#95a5a6;margin-top:2px;">设置后，到时间会在书单上显示提醒标记</div>
+            </div>
+        </div>
+        <div style="margin-top:16px;text-align:right;">
+            <button class="btn btn-primary" id="save-my-status-btn" style="width:100%;">💾 保存设置</button>
+        </div>
     `;
 
     document.getElementById('my-status-body').innerHTML = bodyHTML;
@@ -1641,11 +1735,37 @@ function openMyStatusModal(bookId) {
 
     document.querySelectorAll('.my-status-option').forEach(option => {
         option.addEventListener('click', () => {
-            const status = option.dataset.status || null;
-            saveMyBookStatus(bookId, status);
-            closeMyStatusModal();
-            renderBoard();
+            document.querySelectorAll('.my-status-option').forEach(o => o.classList.remove('selected'));
+            option.classList.add('selected');
         });
+    });
+
+    document.getElementById('save-my-status-btn').addEventListener('click', () => {
+        const selectedOption = document.querySelector('.my-status-option.selected');
+        const status = selectedOption ? (selectedOption.dataset.status || null) : null;
+        const note = document.getElementById('my-book-note').value.trim();
+        const reminder = document.getElementById('my-book-reminder').value;
+
+        if (status) {
+            saveMyBookStatus(bookId, status);
+        } else {
+            const myBooks = getMyBooks();
+            delete myBooks[bookId];
+            localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(myBooks));
+        }
+        if (note) saveMyBookNote(bookId, note);
+        else {
+            const myBooks = getMyBooks();
+            if (myBooks[bookId]) { myBooks[bookId].note = ''; localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(myBooks)); }
+        }
+        if (reminder) saveMyBookReminder(bookId, reminder);
+        else {
+            const myBooks = getMyBooks();
+            if (myBooks[bookId]) { myBooks[bookId].reminderTime = ''; localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(myBooks)); }
+        }
+
+        closeMyStatusModal();
+        renderBoard();
     });
 }
 
@@ -1663,6 +1783,8 @@ function openChapterTimelineModal(bookId) {
     book = updateChapterHistoryAnnouncementStatus(book);
 
     const history = book.chapterHistory || [];
+    const announcements = getAnnouncements();
+    const copied = getCopiedChapters();
 
     document.getElementById('timeline-title').textContent = `📜 ${escapeHtml(book.title)} · 章节更新历史`;
 
@@ -1671,7 +1793,131 @@ function openChapterTimelineModal(bookId) {
             <div class="empty-state"><p>还没有章节更新记录～</p></div>
         `;
     } else {
+        const totalChapters = history.length;
+        let timelyAnnCount = 0;
+        let openedCount = 0;
+        let totalOpenHours = 0;
+        let totalVoteFollowUp = 0;
+        let voteFollowUpCount = 0;
+
+        history.forEach(h => {
+            const hKey = `${book.id}__${h.chapter}`;
+            const ann = announcements.find(a => a.bookId === book.id && a.chapter === h.chapter);
+            const wasCopied = !!copied[hKey] || (ann && (ann.copiedCount || 0) > 0);
+
+            if (h.updateTime && wasCopied) {
+                const copiedTime = copied[hKey]?.copiedAt || ann?.lastCopiedAt || ann?.createdAt;
+                if (copiedTime) {
+                    const diffMs = new Date(copiedTime).getTime() - new Date(h.updateTime).getTime();
+                    if (diffMs >= 0 && diffMs < 2 * 60 * 60 * 1000) timelyAnnCount++;
+                }
+            }
+
+            if (h.discussionOpenedAt && h.updateTime) {
+                openedCount++;
+                const diffMs = new Date(h.discussionOpenedAt).getTime() - new Date(h.updateTime).getTime();
+                totalOpenHours += diffMs / (1000 * 60 * 60);
+            }
+
+            if (h.votesSnapshot) {
+                const snapTotal = (h.votesSnapshot.read || 0) + (h.votesSnapshot.unread || 0) + (h.votesSnapshot.feeding || 0);
+                const snapReadPct = snapTotal > 0 ? (h.votesSnapshot.read || 0) / snapTotal : 0;
+                if (snapReadPct > 0.3) {
+                    totalVoteFollowUp += snapReadPct;
+                    voteFollowUpCount++;
+                }
+            }
+        });
+
+        const avgOpenHours = openedCount > 0 ? Math.round(totalOpenHours / openedCount) : 0;
+        const timelyPct = totalChapters > 0 ? Math.round(timelyAnnCount / totalChapters * 100) : 0;
+        const avgVoteFollow = voteFollowUpCount > 0 ? Math.round(totalVoteFollowUp / voteFollowUpCount * 100) : 0;
+
+        let trendHTML = '';
+        if (history.length >= 2) {
+            const snapshots = history.slice().reverse().filter(h => h.votesSnapshot);
+            if (snapshots.length >= 2) {
+                const latestSnap = snapshots[snapshots.length - 1].votesSnapshot;
+                const earliestSnap = snapshots[0].votesSnapshot;
+                const latestTotal = (latestSnap.read || 0) + (latestSnap.unread || 0) + (latestSnap.feeding || 0);
+                const earliestTotal = (earliestSnap.read || 0) + (earliestSnap.unread || 0) + (earliestSnap.feeding || 0);
+                const latestReadPct = latestTotal > 0 ? Math.round((latestSnap.read || 0) / latestTotal * 100) : 0;
+                const earliestReadPct = earliestTotal > 0 ? Math.round((earliestSnap.read || 0) / earliestTotal * 100) : 0;
+
+                let trendLabel = '';
+                let trendClass = '';
+                if (latestReadPct > earliestReadPct + 10) {
+                    trendLabel = `📈 热度上升（已读完 ${earliestReadPct}% → ${latestReadPct}%）`;
+                    trendClass = 'up';
+                } else if (latestReadPct < earliestReadPct - 10) {
+                    trendLabel = `📉 热度下降（已读完 ${earliestReadPct}% → ${latestReadPct}%）`;
+                    trendClass = 'down';
+                } else {
+                    trendLabel = `➡️ 热度平稳（已读完 ${earliestReadPct}% → ${latestReadPct}%）`;
+                    trendClass = '';
+                }
+
+                trendHTML = `
+                    <div class="timeline-review-card">
+                        <div class="timeline-review-title">📊 投票趋势</div>
+                        <div class="timeline-review-stat ${trendClass}">${trendLabel}</div>
+                        <div class="timeline-trend-bars">
+                            ${snapshots.slice(-6).map(s => {
+                                const st = (s.votesSnapshot.read || 0) + (s.votesSnapshot.unread || 0) + (s.votesSnapshot.feeding || 0);
+                                const rp = st > 0 ? Math.round((s.votesSnapshot.read || 0) / st * 100) : 0;
+                                const up = st > 0 ? Math.round((s.votesSnapshot.unread || 0) / st * 100) : 0;
+                                const fp = st > 0 ? Math.round((s.votesSnapshot.feeding || 0) / st * 100) : 0;
+                                const chName = s.chapter.length > 8 ? s.chapter.substring(0, 8) + '…' : s.chapter;
+                                return `
+                                    <div class="timeline-trend-item">
+                                        <div class="timeline-trend-label">${escapeHtml(chName)}</div>
+                                        <div class="timeline-trend-bar">
+                                            <div class="trend-segment read" style="width:${rp}%" title="已读完 ${rp}%"></div>
+                                            <div class="trend-segment feeding" style="width:${fp}%" title="养肥中 ${fp}%"></div>
+                                            <div class="trend-segment unread" style="width:${up}%" title="还没看 ${up}%"></div>
+                                        </div>
+                                        <div class="timeline-trend-pct">${rp}%</div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        const reviewHTML = `
+            <div class="timeline-review">
+                <div class="timeline-review-title">🔍 运营复盘</div>
+                <div class="timeline-review-grid">
+                    <div class="timeline-review-item">
+                        <div class="timeline-review-value ${timelyPct >= 60 ? 'good' : timelyPct >= 30 ? 'warn' : 'bad'}">${timelyPct}%</div>
+                        <div class="timeline-review-label">公告及时率</div>
+                        <div class="timeline-review-desc">${timelyPct >= 60 ? '公告发布很及时' : timelyPct >= 30 ? '部分公告偏晚' : '公告经常延迟'}</div>
+                    </div>
+                    <div class="timeline-review-item">
+                        <div class="timeline-review-value">${avgOpenHours > 0 ? avgOpenHours + 'h' : '-'}</div>
+                        <div class="timeline-review-label">平均开放耗时</div>
+                        <div class="timeline-review-desc">${openedCount}/${totalChapters} 章已开放讨论</div>
+                    </div>
+                    <div class="timeline-review-item">
+                        <div class="timeline-review-value ${avgVoteFollow >= 50 ? 'good' : avgVoteFollow >= 30 ? 'warn' : 'bad'}">${avgVoteFollow}%</div>
+                        <div class="timeline-review-label">投票跟进率</div>
+                        <div class="timeline-review-desc">读者平均已读完占比</div>
+                    </div>
+                    <div class="timeline-review-item">
+                        <div class="timeline-review-value">${totalChapters}</div>
+                        <div class="timeline-review-label">总更新章节</div>
+                        <div class="timeline-review-desc">含历史归档</div>
+                    </div>
+                </div>
+            </div>
+            ${trendHTML}
+        `;
+
         const bodyHTML = `
+            ${reviewHTML}
+            <div style="margin:16px 0 8px;font-size:15px;font-weight:600;color:#2c3e50;">📜 章节时间线</div>
             <div class="timeline">
                 ${history.map((h, idx) => {
                     const isCurrent = idx === 0;
@@ -1679,6 +1925,7 @@ function openChapterTimelineModal(bookId) {
                     const daysSince = h.updateTime ? daysSinceUpdate(h.updateTime) : 0;
 
                     let annBadge = '';
+                    let annTimeliness = '';
                     if (h.hasAnnouncement) {
                         if (h.announcementCopied) {
                             annBadge = '<span class="book-tag platform">📋 已复制</span>';
@@ -1687,8 +1934,44 @@ function openChapterTimelineModal(bookId) {
                         } else {
                             annBadge = '<span class="book-tag schedule">📢 已发公告</span>';
                         }
+
+                        const hKey = `${book.id}__${h.chapter}`;
+                        const ann = announcements.find(a => a.bookId === book.id && a.chapter === h.chapter);
+                        const copiedTime = copied[hKey]?.copiedAt || ann?.lastCopiedAt || ann?.createdAt;
+                        if (copiedTime && h.updateTime) {
+                            const diffMs = new Date(copiedTime).getTime() - new Date(h.updateTime).getTime();
+                            const diffMins = Math.floor(diffMs / (1000 * 60));
+                            if (diffMins >= 0 && diffMins < 30) annTimeliness = '<span class="review-tag good">⚡ 30分钟内</span>';
+                            else if (diffMins < 120) annTimeliness = '<span class="review-tag warn">🕐 2小时内</span>';
+                            else if (diffMins < 1440) annTimeliness = '<span class="review-tag warn">📅 1天内</span>';
+                            else if (diffMins >= 0) annTimeliness = '<span class="review-tag bad">🐢 超过1天</span>';
+                        }
                     } else {
                         annBadge = '<span class="book-tag discussion-spoiler-ban">⚠️ 未发公告</span>';
+                        annTimeliness = '<span class="review-tag bad">❌ 缺失</span>';
+                    }
+
+                    let openInfo = '';
+                    if (h.discussionOpenedAt && h.updateTime) {
+                        const diffMs = new Date(h.discussionOpenedAt).getTime() - new Date(h.updateTime).getTime();
+                        const diffHours = Math.round(diffMs / (1000 * 60 * 60));
+                        if (diffHours < 24) openInfo = `<span class="review-tag good">🔓 ${diffHours}小时开放</span>`;
+                        else openInfo = `<span class="review-tag warn">🔓 ${Math.round(diffHours / 24)}天开放</span>`;
+                    } else if (h.discussionStatus === 'open') {
+                        openInfo = '<span class="review-tag good">🔓 已开放</span>';
+                    } else if (h.discussionStatus === 'spoiler-limit') {
+                        openInfo = '<span class="review-tag warn">⚠️ 限剧透中</span>';
+                    } else {
+                        openInfo = '<span class="review-tag bad">🚫 未开放</span>';
+                    }
+
+                    let voteInfo = '';
+                    if (h.votesSnapshot) {
+                        const snapTotal = (h.votesSnapshot.read || 0) + (h.votesSnapshot.unread || 0) + (h.votesSnapshot.feeding || 0);
+                        if (snapTotal > 0) {
+                            const rp = Math.round((h.votesSnapshot.read || 0) / snapTotal * 100);
+                            voteInfo = `<span class="review-tag ${rp >= 50 ? 'good' : rp >= 30 ? 'warn' : 'bad'}">🗳️ 已读${rp}%（${snapTotal}人）</span>`;
+                        }
                     }
 
                     return `
@@ -1705,6 +1988,11 @@ function openChapterTimelineModal(bookId) {
                                 ${annBadge}
                             </div>
                             ${h.summary ? `<div class="timeline-summary">${escapeHtml(h.summary)}</div>` : ''}
+                            <div class="timeline-item-review">
+                                ${annTimeliness}
+                                ${openInfo}
+                                ${voteInfo}
+                            </div>
                             <div class="timeline-item-actions">
                                 <button class="btn btn-secondary btn-sm" onclick="generateAndCopyChapterAnnouncement('${book.id}', ${idx})">
                                     📋 补发公告
@@ -1874,12 +2162,41 @@ function renderOverviewPage() {
 
         const updateCount = book.chapterHistory ? book.chapterHistory.length : 0;
 
+        let trendIndicator = '';
+        if (book.chapterHistory && book.chapterHistory.length >= 2) {
+            const snaps = book.chapterHistory.filter(h => h.votesSnapshot);
+            if (snaps.length >= 2) {
+                const latest = snaps[0].votesSnapshot;
+                const earliest = snaps[snaps.length - 1].votesSnapshot;
+                const lt = (latest.read || 0) + (latest.unread || 0) + (latest.feeding || 0);
+                const et = (earliest.read || 0) + (earliest.unread || 0) + (earliest.feeding || 0);
+                const lr = lt > 0 ? Math.round((latest.read || 0) / lt * 100) : 0;
+                const er = et > 0 ? Math.round((earliest.read || 0) / et * 100) : 0;
+                if (lr > er + 10) trendIndicator = '<span class="overview-trend up">📈 升</span>';
+                else if (lr < er - 10) trendIndicator = '<span class="overview-trend down">📉 降</span>';
+                else trendIndicator = '<span class="overview-trend">➡️ 稳</span>';
+            }
+        }
+
+        let miniTrendHTML = '';
+        if (book.chapterHistory) {
+            const recentSnaps = book.chapterHistory.filter(h => h.votesSnapshot).slice(0, 5).reverse();
+            if (recentSnaps.length >= 2) {
+                miniTrendHTML = `<div class="overview-mini-trend">${recentSnaps.map(s => {
+                    const st = (s.votesSnapshot.read || 0) + (s.votesSnapshot.unread || 0) + (s.votesSnapshot.feeding || 0);
+                    const rp = st > 0 ? Math.round((s.votesSnapshot.read || 0) / st * 100) : 0;
+                    return `<div class="mini-trend-dot" style="height:${Math.max(rp, 5)}%;" title="已读完 ${rp}%"></div>`;
+                }).join('')}</div>`;
+            }
+        }
+
         return `
             <div class="overview-item" data-book-id="${book.id}">
                 <div class="overview-item-header">
                     <div>
                         <span class="overview-item-title">${escapeHtml(book.title)}</span>
                         ${myStatusBadge}
+                        ${trendIndicator}
                     </div>
                     <div class="overview-item-badges">
                         <span class="book-tag status-${book.status}">${statusText}</span>
@@ -1910,6 +2227,7 @@ function renderOverviewPage() {
                         <div class="overview-item-stat-label">投票人数</div>
                     </div>
                 </div>
+                ${miniTrendHTML}
                 <div class="overview-item-actions">
                     <button class="btn btn-secondary btn-sm" onclick="openDetailModal('${book.id}')">📖 查看详情</button>
                     <button class="btn btn-secondary btn-sm" onclick="openChapterTimelineModal('${book.id}')">📜 章节历史</button>
@@ -1985,6 +2303,23 @@ function migrateData() {
         if (book.confirmTime === undefined && book.updateConfirmed && book.lastUpdateTime) {
             book.confirmTime = book.lastUpdateTime;
             migrated = true;
+        }
+        if (book.chapterHistory && book.chapterHistory.length > 0) {
+            book.chapterHistory.forEach(h => {
+                if (h.votesSnapshot === undefined) {
+                    h.votesSnapshot = {
+                        read: book.votes?.read || 0,
+                        unread: book.votes?.unread || 0,
+                        feeding: book.votes?.feeding || 0,
+                        capturedAt: h.updateTime || new Date().toISOString()
+                    };
+                    migrated = true;
+                }
+                if (h.discussionOpenedAt === undefined) {
+                    h.discussionOpenedAt = h.discussionStatus === 'open' ? (h.updateTime || null) : null;
+                    migrated = true;
+                }
+            });
         }
     });
 
@@ -2300,11 +2635,11 @@ function initSampleData() {
 
     const sampleMyBooks = {};
     if (books.length >= 5) {
-        sampleMyBooks[books[0].id] = { status: 'reading', updatedAt: new Date().toISOString() };
-        sampleMyBooks[books[2].id] = { status: 'reading', updatedAt: new Date().toISOString() };
-        sampleMyBooks[books[4].id] = { status: 'waiting', updatedAt: new Date().toISOString() };
-        sampleMyBooks[books[6].id] = { status: 'waiting', updatedAt: new Date().toISOString() };
-        sampleMyBooks[books[8].id] = { status: 'dropped', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[0].id] = { status: 'reading', note: '看到1240章了，太刺激', reminderTime: '20:00', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[2].id] = { status: 'reading', note: '', reminderTime: '22:00', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[4].id] = { status: 'waiting', note: '攒10章再看', reminderTime: '', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[6].id] = { status: 'waiting', note: '', reminderTime: '14:00', updatedAt: new Date().toISOString() };
+        sampleMyBooks[books[8].id] = { status: 'dropped', note: '等作者回来再追', reminderTime: '', updatedAt: new Date().toISOString() };
     }
     localStorage.setItem(MY_BOOKS_KEY, JSON.stringify(sampleMyBooks));
 }
