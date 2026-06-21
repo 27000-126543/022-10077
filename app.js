@@ -1,8 +1,8 @@
 // ========== 数据层 ==========
 const STORAGE_KEY = 'novel_tracker_books';
 const VOTE_STORAGE_KEY = 'novel_tracker_votes';
-const SPOILER_REVEAL_KEY = 'novel_tracker_spoiler_reveals';
-const ANNOUNCEMENTS_KEY = 'novel_tracker_announcements';
+const SPOILER_REVEAL_KEY = 'novel_tracker_spoiler_reveals_v2';
+const ANNOUNCEMENTS_KEY = 'novel_tracker_announcements_v2';
 
 function getBooks() {
     const data = localStorage.getItem(STORAGE_KEY);
@@ -29,9 +29,18 @@ function getSpoilerReveals() {
     return data ? JSON.parse(data) : {};
 }
 
-function saveSpoilerReveal(bookId) {
+function getChapterKey(book) {
+    return `${book.id}__${book.latestChapter || 'no_chapter'}`;
+}
+
+function isChapterRevealed(book) {
     const reveals = getSpoilerReveals();
-    reveals[bookId] = Date.now();
+    return reveals[getChapterKey(book)] === true;
+}
+
+function saveChapterReveal(book) {
+    const reveals = getSpoilerReveals();
+    reveals[getChapterKey(book)] = true;
     localStorage.setItem(SPOILER_REVEAL_KEY, JSON.stringify(reveals));
 }
 
@@ -43,9 +52,24 @@ function getAnnouncements() {
 function saveAnnouncement(announcement) {
     const announcements = getAnnouncements();
     announcements.unshift(announcement);
-    if (announcements.length > 50) {
-        announcements.length = 50;
+    if (announcements.length > 100) {
+        announcements.length = 100;
     }
+    localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(announcements));
+}
+
+function updateAnnouncement(id, updates) {
+    const announcements = getAnnouncements();
+    const idx = announcements.findIndex(a => a.id === id);
+    if (idx !== -1) {
+        announcements[idx] = { ...announcements[idx], ...updates };
+        localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(announcements));
+    }
+}
+
+function deleteAnnouncementFromStorage(id) {
+    let announcements = getAnnouncements();
+    announcements = announcements.filter(a => a.id !== id);
     localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(announcements));
 }
 
@@ -169,24 +193,11 @@ function isToday(dateStr) {
     return date.toDateString() === today.toDateString();
 }
 
-function isThisWeek(dateStr) {
-    if (!dateStr) return false;
-    const date = new Date(dateStr);
-    const today = new Date();
-    const weekStart = new Date(today);
-    weekStart.setDate(today.getDate() - today.getDay());
-    weekStart.setHours(0, 0, 0, 0);
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
-    weekEnd.setHours(23, 59, 59, 999);
-    return date >= weekStart && date <= weekEnd;
-}
-
 function daysSinceUpdate(dateStr) {
     if (!dateStr) return 999;
     const date = new Date(dateStr);
     const today = new Date();
-    const diffTime = Math.abs(today - date);
+    const diffTime = today - date;
     return Math.floor(diffTime / (1000 * 60 * 60 * 24));
 }
 
@@ -250,11 +261,32 @@ function formatFullDateTime(dateStr) {
 }
 
 // ========== 讨论状态 ==========
-function getDiscussionStatusInfo(status) {
+function getDiscussionStatusInfo(status, book) {
+    const totalVotes = book ? (book.votes?.read || 0) + (book.votes?.unread || 0) + (book.votes?.feeding || 0) : 0;
+    const readPct = totalVotes > 0 ? Math.round((book.votes?.read || 0) / totalVotes * 100) : 0;
+
     const statusMap = {
-        'spoiler-ban': { label: '🚫 禁剧透期', desc: '禁止讨论任何剧情', color: 'red' },
-        'spoiler-limit': { label: '⚠️ 限剧透期', desc: '讨论需加剧透预警', color: 'yellow' },
-        'open': { label: '✅ 已开放讨论', desc: '可自由讨论剧情', color: 'green' }
+        'spoiler-ban': {
+            label: '🚫 禁剧透期',
+            shortLabel: '🚫 禁剧透',
+            desc: '禁止讨论任何剧情内容',
+            guide: `当前为<strong>禁剧透期</strong>，群内禁止讨论任何本章剧情。建议等待${book ? book.spoilerHours || 24 : 24}小时后，或已读完比例超过60%后再开放讨论。目前已读完 <strong>${readPct}%</strong>。`,
+            color: 'red'
+        },
+        'spoiler-limit': {
+            label: '⚠️ 限剧透期',
+            shortLabel: '⚠️ 限剧透',
+            desc: '讨论必须加剧透预警标签',
+            guide: `当前为<strong>限剧透期</strong>，讨论剧情时必须在开头加上【剧透预警】字样，关键内容建议使用折叠功能。已读完 <strong>${readPct}%</strong>，快到阈值啦～`,
+            color: 'yellow'
+        },
+        'open': {
+            label: '✅ 已开放讨论',
+            shortLabel: '✅ 已开放',
+            desc: '可自由讨论全部剧情',
+            guide: `当前已<strong>开放讨论</strong>，大家可以畅所欲言！记得文明讨论，尊重不同观点～ 已读完 <strong>${readPct}%</strong>。`,
+            color: 'green'
+        }
     };
     return statusMap[status] || statusMap['spoiler-ban'];
 }
@@ -264,6 +296,7 @@ function categorizeBooks(books) {
     const today = [];
     const week = [];
     const watch = [];
+    const history = [];
 
     books.forEach(book => {
         if (book.status === 'hiatus') {
@@ -273,6 +306,11 @@ function categorizeBooks(books) {
 
         if (isToday(book.lastUpdateTime) && book.updateConfirmed) {
             today.push(book);
+            return;
+        }
+
+        if (book.updateConfirmed && !isToday(book.lastUpdateTime)) {
+            history.push(book);
             return;
         }
 
@@ -306,26 +344,34 @@ function categorizeBooks(books) {
     today.sort(sortByUpdate);
     week.sort(sortByNextUpdate);
     watch.sort(sortByUpdate);
+    history.sort(sortByUpdate);
 
-    return { today, week, watch };
+    if (history.length > 20) {
+        history.length = 20;
+    }
+
+    return { today, week, watch, history };
 }
 
 // ========== 渲染层：看板 ==========
 function renderBoard() {
     const books = getBooks();
-    const { today, week, watch } = categorizeBooks(books);
+    const { today, week, watch, history } = categorizeBooks(books);
 
     document.getElementById('stat-today-count').textContent = today.length;
     document.getElementById('stat-week-count').textContent = week.length;
+    document.getElementById('stat-history-count').textContent = history.length;
     document.getElementById('stat-watch-count').textContent = watch.length;
 
     document.getElementById('today-count').textContent = `${today.length} 本`;
     document.getElementById('week-count').textContent = `${week.length} 本`;
     document.getElementById('watch-count').textContent = `${watch.length} 本`;
+    document.getElementById('history-count').textContent = `${history.length} 条`;
 
     renderBookList('today-list', today, 'today');
     renderBookList('week-list', week, 'week');
     renderBookList('watch-list', watch, 'watch');
+    renderHistoryList(history);
 }
 
 function renderBookList(containerId, books, type) {
@@ -355,7 +401,15 @@ function renderBookList(containerId, books, type) {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             const bookId = btn.dataset.bookId;
-            revealSpoiler(bookId);
+            const books = getBooks();
+            const book = books.find(b => b.id === bookId);
+            if (book) {
+                saveChapterReveal(book);
+                renderBoard();
+                if (document.getElementById('detail-modal').classList.contains('active')) {
+                    openDetailModal(bookId);
+                }
+            }
         });
     });
 }
@@ -364,8 +418,7 @@ function createBookCardHTML(book, type) {
     const userVotes = getUserVotes();
     const userVote = userVotes[book.id] || null;
     const spoilerActive = isSpoilerWindowActive(book);
-    const reveals = getSpoilerReveals();
-    const isRevealed = reveals[book.id] || false;
+    const isRevealed = isChapterRevealed(book);
     const showSummary = !spoilerActive || isRevealed;
 
     const totalVotes = (book.votes?.read || 0) + (book.votes?.unread || 0) + (book.votes?.feeding || 0);
@@ -376,7 +429,7 @@ function createBookCardHTML(book, type) {
         'hiatus': '断更中'
     }[book.status] || '未知';
 
-    const discussionInfo = getDiscussionStatusInfo(book.discussionStatus);
+    const discussionInfo = getDiscussionStatusInfo(book.discussionStatus, book);
 
     let updateText = '';
     if (type === 'week') {
@@ -411,7 +464,7 @@ function createBookCardHTML(book, type) {
         ? `<span class="book-tag schedule">📅 ${getScheduleLabel(book)}</span>`
         : '';
 
-    const discussionTag = `<span class="book-tag discussion-${book.discussionStatus}">${discussionInfo.label}</span>`;
+    const discussionTag = `<span class="book-tag discussion-${book.discussionStatus}">${discussionInfo.shortLabel}</span>`;
 
     const nextUpdateText = type === 'week' ? `<span class="next-update-time">⏰ ${updateText}</span>` : '';
     const lastUpdateText = type !== 'week' ? `<span class="update-time">🕒 ${updateText}</span>` : '';
@@ -446,6 +499,50 @@ function createBookCardHTML(book, type) {
     `;
 }
 
+// ========== 最近更新历史列表 ==========
+function renderHistoryList(books) {
+    const container = document.getElementById('history-list');
+
+    if (books.length === 0) {
+        container.innerHTML = `<div class="empty-state"><p>还没有历史更新记录～</p></div>`;
+        return;
+    }
+
+    const announcements = getAnnouncements();
+
+    container.innerHTML = books.map(book => {
+        const hasAnnouncement = announcements.some(a =>
+            a.bookId === book.id && a.chapter === book.latestChapter
+        );
+        const announcementStatus = hasAnnouncement
+            ? '<span class="history-tag has-announcement">📢 已发公告</span>'
+            : '<span class="history-tag no-announcement">⚠️ 未发公告</span>';
+
+        const daysSince = daysSinceUpdate(book.lastUpdateTime);
+
+        return `
+        <div class="history-item" data-book-id="${book.id}">
+            <div class="history-item-main">
+                <div class="history-item-title">📚 ${escapeHtml(book.title)}</div>
+                <div class="history-item-chapter">📖 ${escapeHtml(book.latestChapter || '无章节信息')}</div>
+                <div class="history-item-time">🕒 ${formatDateTime(book.lastUpdateTime)} · ${daysSince}天前</div>
+            </div>
+            <div class="history-item-tags">
+                ${announcementStatus}
+                <span class="history-tag">${escapeHtml(book.author)}</span>
+            </div>
+        </div>
+        `;
+    }).join('');
+
+    container.querySelectorAll('.history-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const bookId = item.dataset.bookId;
+            openDetailModal(bookId);
+        });
+    });
+}
+
 // ========== 渲染层：管理后台 ==========
 function renderAdminList() {
     const books = getBooks();
@@ -460,10 +557,8 @@ function renderAdminList() {
         return;
     }
 
-    const discussionInfo = (status) => getDiscussionStatusInfo(status);
-
     container.innerHTML = books.map(book => {
-        const di = discussionInfo(book.discussionStatus);
+        const di = getDiscussionStatusInfo(book.discussionStatus, book);
         const nextUpdate = getNextUpdateTime(book);
         const nextUpdateText = nextUpdate ? formatDateTime(nextUpdate.toISOString()) : '无排期';
 
@@ -471,7 +566,7 @@ function renderAdminList() {
         <div class="admin-book-item">
             <div class="admin-book-info">
                 <h3>
-                    <span class="admin-discussion-badge ${book.discussionStatus}">${di.label}</span>
+                    <span class="admin-discussion-badge ${book.discussionStatus}">${di.shortLabel}</span>
                     ${escapeHtml(book.title)}
                 </h3>
                 <p>${escapeHtml(book.author)} · ${escapeHtml(book.platform || '未知平台')} · ${{
@@ -480,12 +575,13 @@ function renderAdminList() {
                     'hiatus': '断更中'
                 }[book.status] || '未知'}</p>
                 <p style="margin-top:4px;">
-                    最新: ${escapeHtml(book.latestChapter || '无')} 
+                    最新: ${escapeHtml(book.latestChapter || '无')}
                     · 更新: ${formatDate(book.lastUpdateTime)}
                     · 下次预计: ${nextUpdateText}
                 </p>
                 <p style="margin-top:4px;font-size:12px;color:#95a5a6;">
                     排期: ${getScheduleLabel(book)} · 防剧透: ${book.spoilerHours || 0}小时 · 投票: ${(book.votes?.read || 0) + (book.votes?.unread || 0) + (book.votes?.feeding || 0)}人
+                    · 已确认更新: ${book.updateConfirmed ? '✅' : '❌'}
                 </p>
             </div>
             <div class="admin-book-actions">
@@ -504,9 +600,11 @@ function openDiscussionModal(bookId) {
     const book = books.find(b => b.id === bookId);
     if (!book) return;
 
-    const discussionInfo = getDiscussionStatusInfo(book.discussionStatus);
+    const discussionInfo = getDiscussionStatusInfo(book.discussionStatus, book);
     const totalVotes = (book.votes?.read || 0) + (book.votes?.unread || 0) + (book.votes?.feeding || 0);
     const readPct = totalVotes > 0 ? Math.round((book.votes?.read || 0) / totalVotes * 100) : 0;
+    const unreadPct = totalVotes > 0 ? Math.round((book.votes?.unread || 0) / totalVotes * 100) : 0;
+    const feedingPct = totalVotes > 0 ? Math.round((book.votes?.feeding || 0) / totalVotes * 100) : 0;
 
     const spoilerActive = isSpoilerWindowActive(book);
     const spoilerRemaining = spoilerActive ? formatSpoilerTime(getSpoilerRemainingTime(book)) : '已结束';
@@ -518,22 +616,42 @@ function openDiscussionModal(bookId) {
                 <span class="status-label">当前状态：${discussionInfo.label}</span>
                 <span style="font-size:12px;opacity:0.85;">${discussionInfo.desc}</span>
             </div>
+            <div class="discussion-guide-text">${discussionInfo.guide}</div>
         </div>
 
         <div class="detail-section">
-            <div class="detail-section-title">📊 状态参考</div>
-            <div style="background:#f8f9fa;padding:16px;border-radius:10px;">
-                <div style="display:flex;justify-content:space-between;margin-bottom:10px;">
-                    <span style="font-size:13px;color:#5d6d7e;">已读完比例</span>
-                    <span style="font-size:13px;font-weight:600;color:#27ae60;">${readPct}% (${book.votes?.read || 0}/${totalVotes}人)</span>
+            <div class="detail-section-title">📊 读者进度统计</div>
+            <div class="discussion-vote-stats">
+                <div class="vote-stat-row">
+                    <div class="vote-stat-label">
+                        <span>📗 已读完</span>
+                        <strong>${readPct}% (${book.votes?.read || 0}人)</strong>
+                    </div>
+                    <div class="vote-stat-bar">
+                        <div class="vote-stat-bar-fill read" style="width:${readPct}%;"></div>
+                    </div>
                 </div>
-                <div style="height:8px;background:#e8ecf0;border-radius:4px;overflow:hidden;">
-                    <div style="height:100%;width:${readPct}%;background:linear-gradient(90deg, #27ae60, #2ecc71);border-radius:4px;transition:width 0.5s ease;"></div>
+                <div class="vote-stat-row">
+                    <div class="vote-stat-label">
+                        <span>📕 还没看</span>
+                        <strong>${unreadPct}% (${book.votes?.unread || 0}人)</strong>
+                    </div>
+                    <div class="vote-stat-bar">
+                        <div class="vote-stat-bar-fill unread" style="width:${unreadPct}%;"></div>
+                    </div>
                 </div>
-                <div style="display:flex;justify-content:space-between;margin-top:12px;">
-                    <span style="font-size:13px;color:#5d6d7e;">防剧透倒计时</span>
-                    <span style="font-size:13px;font-weight:600;color:${spoilerActive ? '#e67e22' : '#27ae60'};">${spoilerRemaining}</span>
+                <div class="vote-stat-row">
+                    <div class="vote-stat-label">
+                        <span>📚 养肥中</span>
+                        <strong>${feedingPct}% (${book.votes?.feeding || 0}人)</strong>
+                    </div>
+                    <div class="vote-stat-bar">
+                        <div class="vote-stat-bar-fill feeding" style="width:${feedingPct}%;"></div>
+                    </div>
                 </div>
+            </div>
+            <div style="text-align:center;font-size:12px;color:#95a5a6;margin-top:8px;">
+                共 ${totalVotes} 人参与投票 · 防剧透剩余：<span style="font-weight:600;color:${spoilerActive ? '#e67e22' : '#27ae60'};">${spoilerRemaining}</span>
             </div>
         </div>
 
@@ -551,7 +669,7 @@ function openDiscussionModal(bookId) {
                 </button>
             </div>
             <p style="font-size:12px;color:#95a5a6;margin-top:10px;">
-                提示：可根据投票比例和防剧透时间，手动决定是否开放剧情讨论。
+                💡 建议策略：更新初期🚫禁剧透 → 过半读者读完后⚠️限剧透 → 大部分读者都看了✅全面开放
             </p>
         </div>
     `;
@@ -674,8 +792,14 @@ function handleBookSubmit(e) {
     if (bookId) {
         const index = books.findIndex(b => b.id === bookId);
         if (index !== -1) {
-            const oldVotes = books[index].votes || { read: 0, unread: 0, feeding: 0 };
-            books[index] = { ...books[index], ...bookData, votes: oldVotes };
+            const oldBook = books[index];
+            const oldVotes = oldBook.votes || { read: 0, unread: 0, feeding: 0 };
+
+            if (oldBook.latestChapter !== bookData.latestChapter && bookData.updateConfirmed) {
+                bookData.discussionStatus = 'spoiler-ban';
+            }
+
+            books[index] = { ...oldBook, ...bookData, votes: oldVotes };
         }
     } else {
         books.push({
@@ -708,6 +832,8 @@ function generateAnnouncement(book) {
     const hours = updateDate.getHours().toString().padStart(2, '0');
     const minutes = updateDate.getMinutes().toString().padStart(2, '0');
 
+    const discussionInfo = getDiscussionStatusInfo(book.discussionStatus, book);
+
     let announcement = '';
 
     announcement += '📢【更新通知】📢\n';
@@ -719,25 +845,29 @@ function generateAnnouncement(book) {
     }
     announcement += `📖 最新章节：${book.latestChapter || '更新了'}\n`;
     announcement += `🕒 更新时间：${month}月${day}日 ${hours}:${minutes}\n`;
-
-    if (book.discussionStatus === 'spoiler-ban') {
-        announcement += `🚫 讨论状态：禁剧透期\n`;
-    } else if (book.discussionStatus === 'spoiler-limit') {
-        announcement += `⚠️ 讨论状态：限剧透期（需加剧透预警）\n`;
-    } else {
-        announcement += `✅ 讨论状态：已开放讨论\n`;
-    }
-
+    announcement += `💬 讨论状态：${discussionInfo.label}\n`;
     announcement += '━━━━━━━━━━━━━━━\n\n';
 
-    if (book.spoilerHours && book.spoilerHours > 0) {
-        announcement += `⚠️ 防剧透提醒：\n`;
-        announcement += `   本章更新后 ${book.spoilerHours} 小时内为防剧透期\n`;
-        announcement += `   讨论请使用剧透预警标签 或 开启折叠\n\n`;
+    if (book.discussionStatus === 'spoiler-ban') {
+        announcement += `🚫 【禁剧透提醒】\n`;
+        announcement += `   当前处于禁剧透期，禁止讨论任何本章剧情！\n`;
+        announcement += `   违者将被提醒，屡教不改请管理处理。\n\n`;
+    } else if (book.discussionStatus === 'spoiler-limit') {
+        announcement += `⚠️ 【限剧透提醒】\n`;
+        announcement += `   讨论剧情时必须在开头加上【剧透预警】！\n`;
+        announcement += `   关键情节建议使用折叠/多行空行隐藏。\n\n`;
+    } else {
+        announcement += `✅ 【讨论开放】\n`;
+        announcement += `   可以自由讨论全部剧情了！\n`;
+        announcement += `   请文明讨论，尊重不同观点～\n\n`;
+    }
+
+    if (book.spoilerHours && book.spoilerHours > 0 && book.discussionStatus !== 'open') {
+        announcement += `⏰ 防剧透期：本章更新后 ${book.spoilerHours} 小时内\n\n`;
     }
 
     if (book.chapterSummary) {
-        if (book.spoilerHours && book.spoilerHours > 0) {
+        if (book.discussionStatus === 'spoiler-ban' || book.discussionStatus === 'spoiler-limit') {
             announcement += '🔒 章节简介（含剧透，慎读）：\n';
             announcement += '【剧透预警】'.repeat(5) + '\n';
             announcement += book.chapterSummary + '\n';
@@ -758,8 +888,11 @@ function generateAnnouncement(book) {
     const discussDay = discussTime.getDate();
     const discussHour = discussTime.getHours().toString().padStart(2, '0');
 
-    announcement += `💬 预计开放全剧情讨论：${discussMonth}月${discussDay}日 ${discussHour}:00 后\n`;
-    announcement += '\n';
+    if (book.discussionStatus !== 'open') {
+        announcement += `💡 预计开放全剧情讨论：${discussMonth}月${discussDay}日 ${discussHour}:00 后\n`;
+        announcement += '   （管理员可能根据实际投票情况提前或延后）\n\n';
+    }
+
     announcement += '祝大家阅读愉快！🎉';
 
     return announcement;
@@ -789,6 +922,7 @@ function copyAnnouncement() {
     const statusEl = document.getElementById('copy-status');
 
     navigator.clipboard.writeText(announcement).then(() => {
+        markCurrentAnnouncementCopied();
         statusEl.textContent = '✅ 复制成功！';
         setTimeout(() => {
             statusEl.textContent = '';
@@ -800,6 +934,7 @@ function copyAnnouncement() {
         textarea.select();
         try {
             document.execCommand('copy');
+            markCurrentAnnouncementCopied();
             statusEl.textContent = '✅ 复制成功！';
         } catch (e) {
             statusEl.textContent = '❌ 复制失败，请手动复制';
@@ -811,6 +946,24 @@ function copyAnnouncement() {
     });
 }
 
+function markCurrentAnnouncementCopied() {
+    if (!currentAnnouncementBookId) return;
+    const books = getBooks();
+    const book = books.find(b => b.id === currentAnnouncementBookId);
+    if (!book) return;
+
+    const announcements = getAnnouncements();
+    const existing = announcements.find(a =>
+        a.bookId === book.id && a.chapter === book.latestChapter
+    );
+    if (existing) {
+        updateAnnouncement(existing.id, {
+            copiedCount: (existing.copiedCount || 0) + 1,
+            lastCopiedAt: new Date().toISOString()
+        });
+    }
+}
+
 function saveCurrentAnnouncement() {
     if (!currentAnnouncementBookId) return;
 
@@ -819,18 +972,35 @@ function saveCurrentAnnouncement() {
     if (!book) return;
 
     const content = document.getElementById('announcement-preview').textContent;
+    const announcements = getAnnouncements();
 
-    const announcement = {
-        id: generateId(),
-        bookId: book.id,
-        bookTitle: book.title,
-        chapter: book.latestChapter || '',
-        content: content,
-        discussionStatus: book.discussionStatus,
-        createdAt: new Date().toISOString()
-    };
+    const existing = announcements.find(a =>
+        a.bookId === book.id && a.chapter === book.latestChapter
+    );
 
-    saveAnnouncement(announcement);
+    if (existing) {
+        updateAnnouncement(existing.id, {
+            content: content,
+            discussionStatus: book.discussionStatus,
+            savedCount: (existing.savedCount || 0) + 1,
+            lastSavedAt: new Date().toISOString()
+        });
+    } else {
+        const announcement = {
+            id: generateId(),
+            bookId: book.id,
+            bookTitle: book.title,
+            chapter: book.latestChapter || '',
+            content: content,
+            discussionStatus: book.discussionStatus,
+            createdAt: new Date().toISOString(),
+            copiedCount: 0,
+            savedCount: 1,
+            lastCopiedAt: null,
+            lastSavedAt: new Date().toISOString()
+        };
+        saveAnnouncement(announcement);
+    }
 
     const statusEl = document.getElementById('copy-status');
     statusEl.textContent = '💾 已保存到历史';
@@ -841,47 +1011,109 @@ function saveCurrentAnnouncement() {
 
 // ========== 公告历史 ==========
 function openAnnouncementsHistoryModal() {
-    const announcements = getAnnouncements();
-    const container = document.getElementById('announcements-history-list');
-
-    if (announcements.length === 0) {
-        container.innerHTML = `
-            <div class="empty-state">
-                <p>还没有保存的公告记录～</p>
-            </div>
-        `;
-    } else {
-        container.innerHTML = announcements.map(a => {
-            const discussionInfo = getDiscussionStatusInfo(a.discussionStatus);
-            return `
-            <div class="announcement-history-item">
-                <div class="announcement-history-header">
-                    <span class="announcement-history-title">📚 《${escapeHtml(a.bookTitle)}》</span>
-                    <span class="book-tag discussion-${a.discussionStatus}" style="font-size:11px;">${discussionInfo.label}</span>
-                </div>
-                <div class="announcement-history-meta">
-                    <span>📖 ${escapeHtml(a.chapter || '未知章节')}</span>
-                    <span>🕒 ${formatFullDateTime(a.createdAt)}</span>
-                </div>
-                <div class="announcement-history-preview">${escapeHtml(a.content)}</div>
-                <div class="announcement-history-actions">
-                    <button class="btn btn-secondary btn-small" onclick="copyAnnouncementContent('${a.id}')">📋 复制</button>
-                    <button class="btn btn-danger btn-small" onclick="deleteAnnouncement('${a.id}')">🗑️ 删除</button>
-                </div>
-            </div>
-        `}).join('');
-    }
-
+    populateBookFilter();
+    renderAnnouncementsHistory();
     document.getElementById('announcements-history-modal').classList.add('active');
 }
 
-function copyAnnouncementContent(announcementId) {
+function populateBookFilter() {
+    const books = getBooks();
+    const select = document.getElementById('history-filter-book');
+    const currentValue = select.value;
+
+    select.innerHTML = '<option value="all">全部作品</option>' +
+        books.map(b => `<option value="${b.id}">${escapeHtml(b.title)}</option>`).join('');
+
+    if (currentValue) {
+        select.value = currentValue;
+    }
+}
+
+function renderAnnouncementsHistory() {
+    const allAnnouncements = getAnnouncements();
+    const bookFilter = document.getElementById('history-filter-book').value;
+    const timeFilter = document.getElementById('history-filter-time').value;
+    const statusFilter = document.getElementById('history-filter-status').value;
+
+    let filtered = allAnnouncements;
+
+    if (bookFilter !== 'all') {
+        filtered = filtered.filter(a => a.bookId === bookFilter);
+    }
+
+    if (timeFilter !== 'all') {
+        const days = parseInt(timeFilter);
+        const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+        filtered = filtered.filter(a => new Date(a.createdAt).getTime() >= cutoff);
+    }
+
+    if (statusFilter !== 'all') {
+        if (statusFilter === 'saved') {
+            filtered = filtered.filter(a => (a.savedCount || 0) > 0);
+        } else if (statusFilter === 'copied') {
+            filtered = filtered.filter(a => (a.copiedCount || 0) > 0);
+        } else if (statusFilter === 'unsent') {
+            filtered = filtered.filter(a => (a.copiedCount || 0) === 0);
+        }
+    }
+
+    const container = document.getElementById('announcements-history-list');
+
+    if (filtered.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <p>没有符合筛选条件的公告记录～</p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = filtered.map(a => {
+        const di = getDiscussionStatusInfo(a.discussionStatus);
+
+        let statusBadges = '';
+        if ((a.copiedCount || 0) > 0) {
+            statusBadges += `<span class="announcement-status-badge copied">📋 已复制${a.copiedCount}次</span>`;
+        } else {
+            statusBadges += `<span class="announcement-status-badge never-copied">❓ 未复制过</span>`;
+        }
+        if ((a.savedCount || 0) > 1) {
+            statusBadges += ` <span class="announcement-status-badge copied">💾 重存${a.savedCount}次</span>`;
+        }
+
+        return `
+        <div class="announcement-history-item">
+            <div class="announcement-history-header">
+                <span class="announcement-history-title">📚 《${escapeHtml(a.bookTitle)}》</span>
+                <span class="book-tag discussion-${a.discussionStatus}" style="font-size:11px;">${di.shortLabel}</span>
+            </div>
+            <div class="announcement-history-meta">
+                <span>📖 ${escapeHtml(a.chapter || '未知章节')}</span>
+                <span>🕒 ${formatFullDateTime(a.createdAt)}</span>
+                ${statusBadges}
+            </div>
+            <div class="announcement-history-preview">${escapeHtml(a.content)}</div>
+            <div class="announcement-history-actions">
+                <button class="btn btn-primary btn-small" onclick="copyAnnouncementFromHistory('${a.id}')">📋 复制补发</button>
+                <button class="btn btn-secondary btn-small" onclick="resaveAnnouncement('${a.id}')">💾 重新生成</button>
+                <button class="btn btn-danger btn-small" onclick="deleteAnnouncement('${a.id}')">🗑️ 删除</button>
+            </div>
+        </div>
+    `}).join('');
+}
+
+function copyAnnouncementFromHistory(announcementId) {
     const announcements = getAnnouncements();
     const announcement = announcements.find(a => a.id === announcementId);
     if (!announcement) return;
 
     navigator.clipboard.writeText(announcement.content).then(() => {
-        alert('✅ 已复制到剪贴板！');
+        updateAnnouncement(announcementId, {
+            copiedCount: (announcement.copiedCount || 0) + 1,
+            lastCopiedAt: new Date().toISOString()
+        });
+        alert('✅ 已复制到剪贴板，可粘贴到群里补发！');
+        renderAnnouncementsHistory();
     }).catch(() => {
         const textarea = document.createElement('textarea');
         textarea.value = announcement.content;
@@ -889,21 +1121,49 @@ function copyAnnouncementContent(announcementId) {
         textarea.select();
         try {
             document.execCommand('copy');
+            updateAnnouncement(announcementId, {
+                copiedCount: (announcement.copiedCount || 0) + 1,
+                lastCopiedAt: new Date().toISOString()
+            });
             alert('✅ 已复制到剪贴板！');
+            renderAnnouncementsHistory();
         } catch (e) {
-            alert('❌ 复制失败，请手动复制');
+            alert('❌ 复制失败');
         }
         document.body.removeChild(textarea);
     });
 }
 
+function resaveAnnouncement(announcementId) {
+    const announcements = getAnnouncements();
+    const announcement = announcements.find(a => a.id === announcementId);
+    if (!announcement) return;
+
+    const books = getBooks();
+    const book = books.find(b => b.id === announcement.bookId);
+    if (!book) {
+        alert('❌ 找不到对应书籍，可能已被删除');
+        return;
+    }
+
+    const newContent = generateAnnouncement(book);
+
+    updateAnnouncement(announcementId, {
+        content: newContent,
+        chapter: book.latestChapter || '',
+        discussionStatus: book.discussionStatus,
+        savedCount: (announcement.savedCount || 0) + 1,
+        lastSavedAt: new Date().toISOString()
+    });
+
+    alert('✅ 已根据最新书籍信息重新生成公告！');
+    renderAnnouncementsHistory();
+}
+
 function deleteAnnouncement(announcementId) {
     if (!confirm('确定删除这条公告记录吗？')) return;
-
-    let announcements = getAnnouncements();
-    announcements = announcements.filter(a => a.id !== announcementId);
-    localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(announcements));
-    openAnnouncementsHistoryModal();
+    deleteAnnouncementFromStorage(announcementId);
+    renderAnnouncementsHistory();
 }
 
 function closeAnnouncementsHistoryModal() {
@@ -925,8 +1185,7 @@ function openDetailModal(bookId) {
     const feedingPct = totalVotes > 0 ? Math.round((book.votes?.feeding || 0) / totalVotes * 100) : 0;
 
     const spoilerActive = isSpoilerWindowActive(book);
-    const reveals = getSpoilerReveals();
-    const isRevealed = reveals[bookId] || false;
+    const isRevealed = isChapterRevealed(book);
     const showSummary = !spoilerActive || isRevealed;
 
     const statusText = {
@@ -935,15 +1194,15 @@ function openDetailModal(bookId) {
         'hiatus': '断更中'
     }[book.status] || '未知';
 
-    const discussionInfo = getDiscussionStatusInfo(book.discussionStatus);
+    const discussionInfo = getDiscussionStatusInfo(book.discussionStatus, book);
 
     let spoilerTimerHTML = '';
     if (spoilerActive && !isRevealed) {
         const remaining = getSpoilerRemainingTime(book);
         spoilerTimerHTML = `
             <div class="spoiler-timer">
-                🔒 防剧透保护中，还有 <strong>${formatSpoilerTime(remaining)}</strong> 自动解锁
-                <button class="spoiler-reveal-btn" onclick="revealSpoiler('${bookId}')">我看完了，显示简介</button>
+                🔒 本章防剧透保护中，还有 <strong>${formatSpoilerTime(remaining)}</strong> 自动解锁
+                <button class="spoiler-reveal-btn" onclick="revealChapterSpoiler('${book.id}')">我看完了，显示简介</button>
             </div>
         `;
     }
@@ -964,7 +1223,7 @@ function openDetailModal(bookId) {
             <div class="detail-meta-row">
                 ${book.platform ? `<span class="book-tag platform">${escapeHtml(book.platform)}</span>` : ''}
                 <span class="book-tag status-${book.status}">${statusText}</span>
-                <span class="book-tag discussion-${book.discussionStatus}">${discussionInfo.label}</span>
+                <span class="book-tag discussion-${book.discussionStatus}">${discussionInfo.shortLabel}</span>
                 ${book.scheduleType && book.scheduleType !== 'none' ? `<span class="book-tag schedule">📅 ${getScheduleLabel(book)}</span>` : ''}
             </div>
         </div>
@@ -973,6 +1232,7 @@ function openDetailModal(bookId) {
             <span class="status-label">讨论状态：${discussionInfo.label}</span>
             <span style="font-size:12px;opacity:0.85;">${discussionInfo.desc}</span>
         </div>
+        <div class="discussion-guide-text">${discussionInfo.guide}</div>
 
         <div class="detail-section">
             <div class="detail-section-title">📖 最新章节</div>
@@ -1044,6 +1304,15 @@ function openDetailModal(bookId) {
     document.getElementById('detail-modal').classList.add('active');
 }
 
+function revealChapterSpoiler(bookId) {
+    const books = getBooks();
+    const book = books.find(b => b.id === bookId);
+    if (!book) return;
+    saveChapterReveal(book);
+    openDetailModal(bookId);
+    renderBoard();
+}
+
 function closeDetailModal() {
     document.getElementById('detail-modal').classList.remove('active');
 }
@@ -1073,12 +1342,6 @@ function castVote(bookId, voteType) {
     saveUserVote(bookId, voteType);
     saveBooks(books);
 
-    openDetailModal(bookId);
-    renderBoard();
-}
-
-function revealSpoiler(bookId) {
-    saveSpoilerReveal(bookId);
     openDetailModal(bookId);
     renderBoard();
 }
@@ -1141,10 +1404,29 @@ function migrateData() {
             book.votes = { read: 0, unread: 0, feeding: 0 };
             migrated = true;
         }
+        if (book.updateConfirmed === undefined) {
+            book.updateConfirmed = !!book.lastUpdateTime;
+            migrated = true;
+        }
     });
 
     if (migrated) {
         saveBooks(books);
+    }
+
+    const oldAnnouncements = localStorage.getItem('novel_tracker_announcements');
+    if (oldAnnouncements && !localStorage.getItem(ANNOUNCEMENTS_KEY)) {
+        try {
+            const parsed = JSON.parse(oldAnnouncements);
+            const migrated = parsed.map(a => ({
+                ...a,
+                copiedCount: 0,
+                savedCount: 1,
+                lastCopiedAt: null,
+                lastSavedAt: a.createdAt
+            }));
+            localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(migrated));
+        } catch (e) {}
     }
 }
 
@@ -1160,6 +1442,10 @@ function initSampleData() {
     const yesterday = new Date(now);
     yesterday.setDate(yesterday.getDate() - 1);
     yesterday.setHours(15, 0, 0, 0);
+
+    const twoDaysAgo = new Date(now);
+    twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+    twoDaysAgo.setHours(9, 0, 0, 0);
 
     const threeDaysAgo = new Date(now);
     threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
@@ -1181,9 +1467,9 @@ function initSampleData() {
     dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 2);
     dayAfterTomorrow.setHours(10, 0, 0, 0);
 
-    const nextWeek = new Date(now);
-    nextWeek.setDate(nextWeek.getDate() + 5);
-    nextWeek.setHours(20, 0, 0, 0);
+    const inThreeDays = new Date(now);
+    inThreeDays.setDate(inThreeDays.getDate() + 3);
+    inThreeDays.setHours(19, 0, 0, 0);
 
     const sampleBooks = [
         {
@@ -1203,7 +1489,7 @@ function initSampleData() {
             scheduleTime: '14:00',
             nextUpdate: null,
             discussionStatus: 'spoiler-ban',
-            votes: { read: 28, unread: 15, feeding: 7 },
+            votes: { read: 12, unread: 28, feeding: 10 },
             createdAt: twoWeeksAgo.toISOString()
         },
         {
@@ -1234,7 +1520,7 @@ function initSampleData() {
             status: 'ongoing',
             latestChapter: '第567章 雨夜的告白',
             chapterSummary: '雨夜，昭阳和米彩在屋檐下避雨。两人之间的气氛变得微妙，米彩终于鼓起勇气问出了那个藏在心底很久的问题...',
-            lastUpdateTime: threeDaysAgo.toISOString(),
+            lastUpdateTime: twoDaysAgo.toISOString(),
             spoilerHours: 6,
             discussionRule: '都市情感文，大家文明讨论，不要站队互撕。',
             updateConfirmed: true,
@@ -1243,7 +1529,7 @@ function initSampleData() {
             scheduleTime: '20:00',
             nextUpdate: null,
             discussionStatus: 'open',
-            votes: { read: 16, unread: 34, feeding: 8 },
+            votes: { read: 38, unread: 12, feeding: 8 },
             createdAt: tenDaysAgo.toISOString()
         },
         {
@@ -1294,7 +1580,7 @@ function initSampleData() {
             status: 'ongoing',
             latestChapter: '第312章 阵法的数学原理',
             chapterSummary: '陈默用现代数学重新解析了古代阵法，发现了其中的规律。他决定用这个原理，构建一个前所未有的超级大阵...',
-            lastUpdateTime: today.toISOString(),
+            lastUpdateTime: threeDaysAgo.toISOString(),
             spoilerHours: 24,
             discussionRule: '脑洞文，欢迎讨论技术细节，但请勿杠现实可行性。',
             updateConfirmed: true,
@@ -1302,8 +1588,8 @@ function initSampleData() {
             scheduleDay: 3,
             scheduleTime: '14:00',
             nextUpdate: null,
-            discussionStatus: 'spoiler-ban',
-            votes: { read: 19, unread: 8, feeding: 22 },
+            discussionStatus: 'open',
+            votes: { read: 35, unread: 8, feeding: 22 },
             createdAt: threeDaysAgo.toISOString()
         },
         {
@@ -1314,41 +1600,92 @@ function initSampleData() {
             status: 'ongoing',
             latestChapter: '第456章 案发现场',
             chapterSummary: '',
-            lastUpdateTime: threeDaysAgo.toISOString(),
+            lastUpdateTime: yesterday.toISOString(),
             spoilerHours: 24,
-            discussionRule: '悬疑推理文，严禁剧透凶手身份。',
+            discussionRule: '悬疑推理文，严禁剧透凶手身份，违者踢群处理。',
             updateConfirmed: false,
             scheduleType: 'daily',
             scheduleDay: 1,
             scheduleTime: '12:00',
             nextUpdate: tomorrow.toISOString(),
-            discussionStatus: 'open',
-            votes: { read: 35, unread: 20, feeding: 15 },
+            discussionStatus: 'spoiler-ban',
+            votes: { read: 15, unread: 35, feeding: 20 },
             createdAt: tenDaysAgo.toISOString()
         },
         {
             id: generateId(),
-            title: '诡秘之主',
+            title: '诡秘之主2',
             author: '爱潜水的乌贼',
             platform: '起点中文网',
             status: 'ongoing',
-            latestChapter: '第200章 占卜家',
+            latestChapter: '第78章 占卜师的预言',
             chapterSummary: '',
-            lastUpdateTime: yesterday.toISOString(),
+            lastUpdateTime: twoDaysAgo.toISOString(),
             spoilerHours: 48,
-            discussionRule: '克苏鲁风格，讨论请适度，不要过度解读。',
+            discussionRule: '克苏鲁风格，讨论请适度，不要过度解读和剧透。',
             updateConfirmed: false,
             scheduleType: 'weekly',
             scheduleDay: 5,
             scheduleTime: '19:00',
-            nextUpdate: dayAfterTomorrow.toISOString(),
+            nextUpdate: inThreeDays.toISOString(),
             discussionStatus: 'spoiler-limit',
-            votes: { read: 56, unread: 30, feeding: 25 },
+            votes: { read: 22, unread: 40, feeding: 45 },
             createdAt: twoWeeksAgo.toISOString()
+        },
+        {
+            id: generateId(),
+            title: '择日飞升',
+            author: '宅猪',
+            platform: '起点中文网',
+            status: 'ongoing',
+            latestChapter: '第198章 飞升之门',
+            chapterSummary: '',
+            lastUpdateTime: yesterday.toISOString(),
+            spoilerHours: 24,
+            discussionRule: '玄幻修仙文，讨论可以大胆猜测剧情走向。',
+            updateConfirmed: false,
+            scheduleType: 'daily',
+            scheduleDay: 1,
+            scheduleTime: '18:00',
+            nextUpdate: dayAfterTomorrow.toISOString(),
+            discussionStatus: 'spoiler-ban',
+            votes: { read: 10, unread: 28, feeding: 30 },
+            createdAt: threeDaysAgo.toISOString()
         }
     ];
 
     saveBooks(sampleBooks);
+
+    const sampleAnnouncements = [
+        {
+            id: generateId(),
+            bookId: sampleBooks[0].id,
+            bookTitle: '道诡异仙',
+            chapter: '第1244章 归途',
+            content: '📢【更新通知】📢\n━━━━━━━━━━━━━━━\n📚 作品：《道诡异仙》\n✍️ 作者：狐尾的笔\n📖 最新章节：第1244章 归途\n━━━━━━━━━━━━━━━\n\n祝大家阅读愉快！',
+            discussionStatus: 'open',
+            createdAt: yesterday.toISOString(),
+            copiedCount: 3,
+            savedCount: 1,
+            lastCopiedAt: yesterday.toISOString(),
+            lastSavedAt: yesterday.toISOString()
+        },
+        {
+            id: generateId(),
+            bookId: sampleBooks[1].id,
+            bookTitle: '深空彼岸',
+            chapter: '第891章 旧神苏醒',
+            content: '📢【更新通知】📢\n━━━━━━━━━━━━━━━\n📚 作品：《深空彼岸》\n✍️ 作者：辰东\n📖 最新章节：第891章 旧神苏醒\n━━━━━━━━━━━━━━━\n\n⚠️ 讨论需加剧透预警！\n\n祝大家阅读愉快！',
+            discussionStatus: 'spoiler-limit',
+            createdAt: twoDaysAgo.toISOString(),
+            copiedCount: 0,
+            savedCount: 1,
+            lastCopiedAt: null,
+            lastSavedAt: twoDaysAgo.toISOString()
+        }
+    ];
+
+    localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(sampleAnnouncements));
 }
 
 // ========== 初始化 ==========
@@ -1375,6 +1712,10 @@ function init() {
 
     document.getElementById('view-announcements-history-btn').addEventListener('click', openAnnouncementsHistoryModal);
     document.getElementById('announcements-history-close').addEventListener('click', closeAnnouncementsHistoryModal);
+
+    document.getElementById('history-filter-book').addEventListener('change', renderAnnouncementsHistory);
+    document.getElementById('history-filter-time').addEventListener('change', renderAnnouncementsHistory);
+    document.getElementById('history-filter-status').addEventListener('change', renderAnnouncementsHistory);
 
     document.querySelectorAll('.modal').forEach(modal => {
         modal.addEventListener('click', (e) => {
