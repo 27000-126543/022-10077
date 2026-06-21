@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小说追更看板 - 书友会公共书单</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-content">
+            <h1 class="app-title">📚 小说追更看板</h1>
+            <p class="app-subtitle">书友会公共书单 · 一起追更不迷路</p>
+        </div>
+        <nav class="nav-tabs">
+            <button class="nav-tab active" data-view="board">追更看板</button>
+            <button class="nav-tab" data-view="admin">管理后台</button>
+        </nav>
+    </header>
+
+    <main class="app-main">
+        <!-- 看板视图 -->
+        <section id="board-view" class="view active">
+            <div class="board-stats">
+                <div class="stat-card stat-today">
+                    <span class="stat-label">今日更新</span>
+                    <span class="stat-value" id="stat-today-count">0</span>
+                    <span class="stat-unit">本</span>
+                </div>
+                <div class="stat-card stat-week">
+                    <span class="stat-label">本周待更</span>
+                    <span class="stat-value" id="stat-week-count">0</span>
+                    <span class="stat-unit">本</span>
+                </div>
+                <div class="stat-card stat-watch">
+                    <span class="stat-label">断更观察</span>
+                    <span class="stat-value" id="stat-watch-count">0</span>
+                    <span class="stat-unit">本</span>
+                </div>
+            </div>
+
+            <div class="board-sections">
+                <!-- 今天更新 -->
+                <section class="board-section">
+                    <div class="section-header">
+                        <h2 class="section-title section-title-today">
+                            <span class="section-icon">🔥</span>
+                            今天更新
+                        </h2>
+                        <span class="section-count" id="today-count">0 本</span>
+                    </div>
+                    <div class="book-list" id="today-list">
+                        <div class="empty-state">
+                            <p>今天还没有更新的书哦～</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 本周待更 -->
+                <section class="board-section">
+                    <div class="section-header">
+                        <h2 class="section-title section-title-week">
+                            <span class="section-icon">⏳</span>
+                            本周待更
+                        </h2>
+                        <span class="section-count" id="week-count">0 本</span>
+                    </div>
+                    <div class="book-list" id="week-list">
+                        <div class="empty-state">
+                            <p>本周没有预计更新的书～</p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 已断更观察 -->
+                <section class="board-section">
+                    <div class="section-header">
+                        <h2 class="section-title section-title-watch">
+                            <span class="section-icon">👀</span>
+                            已断更观察
+                        </h2>
+                        <span class="section-count" id="watch-count">0 本</span>
+                    </div>
+                    <div class="book-list" id="watch-list">
+                        <div class="empty-state">
+                            <p>没有在观察的断更书籍～</p>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </section>
+
+        <!-- 管理后台视图 -->
+        <section id="admin-view" class="view">
+            <div class="admin-header">
+                <h2>📖 书单管理</h2>
+                <button class="btn btn-primary" id="add-book-btn">+ 添加书籍</button>
+            </div>
+
+            <div class="admin-book-list" id="admin-book-list">
+                <div class="empty-state">
+                    <p>还没有添加任何书籍，点击上方按钮添加第一本吧～</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 添加/编辑书籍弹窗 -->
+    <div class="modal" id="book-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">添加书籍</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <form class="modal-body" id="book-form">
+                <input type="hidden" id="book-id">
+                <div class="form-group">
+                    <label for="book-title">作品名 *</label>
+                    <input type="text" id="book-title" required placeholder="请输入作品名称">
+                </div>
+                <div class="form-group">
+                    <label for="book-author">作者 *</label>
+                    <input type="text" id="book-author" required placeholder="请输入作者名">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="book-platform">连载平台</label>
+                        <input type="text" id="book-platform" placeholder="如：起点、晋江、番茄">
+                    </div>
+                    <div class="form-group">
+                        <label for="book-status">连载状态</label>
+                        <select id="book-status">
+                            <option value="ongoing">连载中</option>
+                            <option value="completed">已完结</option>
+                            <option value="hiatus">断更中</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="book-latest-chapter">最新章节</label>
+                    <input type="text" id="book-latest-chapter" placeholder="如：第123章 章节标题">
+                </div>
+                <div class="form-group">
+                    <label for="book-chapter-summary">章节简介</label>
+                    <textarea id="book-chapter-summary" rows="3" placeholder="最新章节的内容简介（用于群公告）"></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="book-update-date">更新日期</label>
+                        <input type="date" id="book-update-date">
+                    </div>
+                    <div class="form-group">
+                        <label for="book-spoiler-hours">防剧透窗口（小时）</label>
+                        <input type="number" id="book-spoiler-hours" min="0" max="168" value="24" placeholder="24">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="book-discussion-rule">讨论规则</label>
+                    <textarea id="book-discussion-rule" rows="2" placeholder="如：更新后24小时内禁止剧透，讨论请加剧透预警"></textarea>
+                </div>
+                <div class="form-group form-checkbox">
+                    <label>
+                        <input type="checkbox" id="book-update-confirmed">
+                        标记为已确认更新（触发群提醒）
+                    </label>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="modal-cancel">取消</button>
+                    <button type="submit" class="btn btn-primary">保存</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 群提醒弹窗 -->
+    <div class="modal" id="announcement-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📢 群公告生成器</h3>
+                <button class="modal-close" id="announcement-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="announcement-preview" id="announcement-preview"></div>
+                <div class="announcement-actions">
+                    <button class="btn btn-primary" id="copy-announcement-btn">
+                        📋 复制到剪贴板
+                    </button>
+                    <span class="copy-status" id="copy-status"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 书籍详情/投票弹窗 -->
+    <div class="modal" id="detail-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="detail-title">书籍详情</h3>
+                <button class="modal-close" id="detail-close">&times;</button>
+            </div>
+            <div class="modal-body" id="detail-body">
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
